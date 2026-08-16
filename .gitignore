@@ -1,0 +1,24 @@
+# EEG data cache (MOABB downloads here)
+mne_data/
+
+# Generated EDA outputs -- regenerable, not source
+eda_outputs/
+eda_outputs_*/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Environment
+venv/
+env/
+.venv/
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
