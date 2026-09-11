@@ -338,7 +338,24 @@ class ThaiCheckerboardSpeller:
             self.stims[target_idx].color = "gainsboro"
             return False
 
-    def run_session(self, targets: str) -> int:
+    def wait_for_marker_consumers(self, timeout_s: float = 15.0, settle_s: float = 2.0) -> bool:
+        """
+        Hold the first trial until a marker consumer subscribes, then wait
+        settle_s so the others (recorder, inference service, mock headset)
+        can subscribe too. LSL does not replay samples to late subscribers,
+        so a trial_start pushed before the recorder connects is lost.
+        """
+        if self.outlet is None:
+            raise RuntimeError("Call create_lsl_outlet() first.")
+        if not self.outlet.wait_for_consumers(timeout=timeout_s):
+            warnings.warn(f"No marker consumer connected within {timeout_s:g} s; starting anyway. "
+                          "Markers pushed before a recorder subscribes are lost.", stacklevel=2)
+            return False
+        core.wait(settle_s)
+        return True
+
+    def run_session(self, targets: str, consumer_wait_s: float = 15.0,
+                    consumer_settle_s: float = 2.0) -> int:
         """
         Run one trial per character in `targets`, in order -- the
         calibration/training flow: the experimenter supplies the string
@@ -355,6 +372,7 @@ class ThaiCheckerboardSpeller:
                 f"Every character must exist in characters_th.json."
             )
 
+        self.wait_for_marker_consumers(consumer_wait_s, consumer_settle_s)
         completed = 0
         for i, char in enumerate(targets):
             print(f"[stimulus] Trial {i + 1}/{len(targets)}: target {char!r}")

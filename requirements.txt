@@ -1,6 +1,7 @@
-# P300 Speller project dependencies. Install into the p300speller conda env:
-#   conda activate p300speller
-#   pip install -r requirements.txt
+# P300 Speller project dependencies. Install into the p300speller conda env,
+# calling that env's interpreter directly (on this machine a pipenv virtualenv
+# can shadow `python`/`pip` even after `conda activate`):
+#   "$(conda info --base)/envs/p300speller/bin/python" -m pip install -r requirements.txt
 
 # Analysis / classifiers / EDA
 numpy

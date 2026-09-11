@@ -1,47 +1,49 @@
 """
 Synthetic Unicorn Hybrid Black -- publishes a fake EEG LSL outlet so the
-whole session flow (session_gui.py -> record_session.py ->
-checkerboard_stimulus.py) can be run and demonstrated with no headset,
-no Windows VM, and no Unicorn LSL Interface.
+whole session flow (session GUI -> record_session.py ->
+checkerboard_stimulus.py -> inference service) can be run and demonstrated
+with no headset, no Windows VM, and no Unicorn LSL Interface.
 
 Nothing downstream needs to change to use this: every consumer in this
-repo resolves streams by TYPE ('EEG' / 'Markers'), never by stream name
-(record_session.resolve_eeg_inlet, session_gui.EEGStreamReader.run), so
-this outlet is picked up automatically.
+repo resolves streams by TYPE ('EEG' / 'Markers'), never by stream name,
+so this outlet is picked up automatically.
 
 WHAT IT GENERATES
   - Background: one-pole-filtered white noise per channel ("pink-ish",
-    1/f-leaning), scaled into the plausible-EEG band that
-    record_session.py's sanity check and session_gui.py's scalp map both
-    expect (1-200 uV peak-to-peak).
+    1/f-leaning), scaled into the plausible-EEG band that the recorder's
+    sanity check and the GUI's scalp map both expect (1-200 uV peak-to-peak).
   - P300 responses: subscribes to the 'P300Markers' stream published by
     checkerboard_stimulus.py and superimposes a synthetic P300 deflection
     after every flash whose marker says is_target=true, weighted across
-    channels by a centro-parietal topography. This is what makes a demo
-    recording usable for developing epoching/ERP/calibration code --
-    the CSV contains real structure, not just noise.
+    channels by a centro-parietal topography. Each response's latency and
+    amplitude are drawn once, when its marker arrives.
 
-UNITS: microvolts. record_session.run_signal_sanity_check() and
-session_gui.classify_quality() both treat raw sample values as uV
-(SANITY_PTP_MIN_UV=1.0, SANITY_PTP_MAX_UV=200.0). Emitting volts here
-would make every channel read as flat/red. Note config.py's
-PTP_REJECT_THRESHOLD_V is VOLTS and scoped to the MOABB datasets --
-deliberately not used here.
+TIMESTAMPS: samples sit on a fixed grid t0 + index / sfreq, emitted as the
+wall clock passes each grid point (next_chunk). Stamping each chunk at
+wall-clock "now" instead makes consecutive chunks overlap whenever a poll
+runs early, which gives non-monotonic timestamps that epoching rightly
+rejects. After a stall the stream skips ahead, leaving an honest gap.
 
-THE DATA IS FAKE. The outlet is named 'MockUnicornEEG' (not
-'UnicornEEG') so it is unmistakable in logs, LabRecorder, and stream
-listings that no brain produced it.
+UNITS: microvolts, like the real stream. Emitting volts would make every
+channel read as flat/red. config.py's PTP_REJECT_THRESHOLD_V is VOLTS and
+scoped to the MOABB datasets -- deliberately not used here.
+
+THE DATA IS FAKE. The outlet is named 'MockUnicornEEG' (not 'UnicornEEG')
+so it is unmistakable in logs, LabRecorder, and stream listings that no
+brain produced it.
 
 Usage:
     python mock_headset.py                          # all channels good
     python mock_headset.py --flat P3 --noisy C4     # simulate bad contacts
     python mock_headset.py --no-p300                # background noise only
+    python mock_headset.py --eeg-type EEGQA_1 --marker-type MarkersQA_1   # isolated QA streams
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import signal
 import sys
 import threading
@@ -54,7 +56,9 @@ from record_session import EEG_CHANNELS, SANITY_PTP_MIN_UV, SANITY_PTP_MAX_UV
 
 STREAM_NAME = "MockUnicornEEG"
 SFREQ = 250.0
-CHUNK_SAMPLES = 5            # 5 samples @ 250 Hz = one chunk per 20 ms
+CHUNK_SAMPLES = 5            # nominal chunk: 5 samples @ 250 Hz = 20 ms
+POLL_S = 0.01
+MAX_BACKLOG_S = 1.0
 P300_PEAK_LATENCY_S = 0.35   # inside config.P300_SEARCH_WINDOW (0.25, 0.55)
 P300_WIDTH_S = 0.06          # Gaussian sigma
 P300_AMPLITUDE_UV = 6.0
@@ -101,10 +105,8 @@ INTERFERENCE_FREQ_HZ = 47.0
 
 
 # ----------------------------------------------------------------------
-# Pure signal functions -- no LSL, no threads, no clock. Unit-tested in
-# tests/test_mock_headset.py (same split as flash_sequence.py vs
-# checkerboard_stimulus.py: the logic that would silently corrupt a
-# recording is kept independently testable).
+# Pure functions -- no LSL, no threads, no clock. Unit-tested in
+# tests/test_mock_headset.py and tests/test_mock_headset_timing.py.
 # ----------------------------------------------------------------------
 
 def p300_waveform(t_rel: np.ndarray, amplitude: float = P300_AMPLITUDE_UV,
@@ -129,6 +131,12 @@ def p300_waveform(t_rel: np.ndarray, amplitude: float = P300_AMPLITUDE_UV,
     return np.where(t_rel < 0, 0.0, y)
 
 
+def draw_p300_params(rng: np.random.Generator) -> tuple[float, float]:
+    """(peak latency s, amplitude uV) for one target flash, drawn once per event."""
+    return (P300_PEAK_LATENCY_S + rng.normal(0, 0.02),
+            P300_AMPLITUDE_UV * (1 + rng.normal(0, 0.15)))
+
+
 def background_noise_step(state: np.ndarray, rng: np.random.Generator,
                           n_samples: int, alpha: float = 0.92) -> tuple:
     """
@@ -136,15 +144,7 @@ def background_noise_step(state: np.ndarray, rng: np.random.Generator,
 
     The filter state is carried in and out so consecutive chunks join
     seamlessly -- regenerating independent noise per chunk would put a
-    discontinuity at every chunk boundary (an artifact at a fixed 20 ms
-    period, which is exactly the kind of thing that would show up as a
-    spurious oscillation in a PSD).
-
-    Args:
-        state: last filter value per channel, shape (n_channels,).
-        rng: random generator.
-        n_samples: samples to produce.
-        alpha: pole location; higher = more low-frequency-weighted.
+    discontinuity at every chunk boundary.
 
     Returns:
         (samples, new_state) where samples has shape
@@ -171,8 +171,7 @@ def interference_uv(t: np.ndarray, channel: str, flat: set, noisy: set,
 
     Precedence is flat > railed > noisy: a disconnected electrode picks up
     nothing, so `flat` suppresses interference rather than adding to it,
-    and a channel named in several sets resolves to the worst case (a typo
-    cannot silently produce a better-looking channel than intended).
+    and a channel named in several sets resolves to the worst case.
     """
     t = np.asarray(t, dtype=float)
     if channel in flat:
@@ -186,25 +185,46 @@ def interference_uv(t: np.ndarray, channel: str, flat: set, noisy: set,
     return amplitude * np.sin(2 * np.pi * INTERFERENCE_FREQ_HZ * t)
 
 
+def next_chunk(t0: float, n_emitted: int, now: float, sfreq: float,
+               max_backlog: int, chunk_samples: int = CHUNK_SAMPLES) -> tuple[int, int]:
+    """
+    (first sample index, n samples) owed at wall-clock `now` on the grid
+    t0 + index / sfreq. After a stall of more than max_backlog samples, skips
+    ahead and emits only the latest chunk, leaving a timestamp gap.
+    """
+    owed = int(math.floor((now - t0) * sfreq)) + 1 - n_emitted
+    if owed <= 0:
+        return n_emitted, 0
+    if owed > max_backlog:
+        return n_emitted + owed - chunk_samples, chunk_samples
+    return n_emitted, owed
+
+
+def sample_timestamps(t0: float, first_index: int, n: int, sfreq: float) -> np.ndarray:
+    return t0 + (first_index + np.arange(n)) / sfreq
+
+
 # ----------------------------------------------------------------------
 # Marker listening (I/O)
 # ----------------------------------------------------------------------
 
 class MarkerListener(threading.Thread):
     """
-    Watches the 'P300Markers' stream and records the onset time of every
-    target flash, so the generator can superimpose a P300 response.
+    Watches the marker stream and records (onset, latency, amplitude) for
+    every target flash, so the generator can superimpose a P300 response.
 
-    Re-resolves the stream whenever it goes away: checkerboard_stimulus.py
-    creates a fresh outlet on every run and session_gui.py restarts it per
-    session, so resolving once at startup would work for exactly one
-    session and then silently stop injecting responses.
+    The inlet is opened immediately on construction: an unopened inlet
+    buffers nothing, so target markers pushed before the first pull would
+    get no response.
     """
 
-    def __init__(self, event_sink: list, lock: threading.Lock):
+    def __init__(self, event_sink: list, lock: threading.Lock,
+                 marker_type: str = "Markers", seed: int = 0):
         super().__init__(daemon=True)
         self.event_sink = event_sink
         self.lock = lock
+        self.marker_type = marker_type
+        self._rng = np.random.default_rng(seed)
         self._stop_event = threading.Event()
         self.n_targets_seen = 0
 
@@ -214,22 +234,18 @@ class MarkerListener(threading.Thread):
     def run(self):
         inlet = None
         while not self._stop_event.is_set():
-            if inlet is None:
-                streams = resolve_byprop("type", "Markers", timeout=1.0)
-                if not streams:
-                    continue
-                inlet = StreamInlet(streams[0])
-                print("[mock_headset] Marker stream found -- P300 injection active.")
-
             try:
+                if inlet is None:
+                    streams = resolve_byprop("type", self.marker_type, timeout=1.0)
+                    if not streams:
+                        continue
+                    inlet = StreamInlet(streams[0])
+                    inlet.open_stream(timeout=5.0)
+                    print("[mock_headset] Marker stream found -- P300 injection active.")
                 samples, timestamps = inlet.pull_chunk(timeout=0.2)
             except Exception:
-                # Stimulus exited; drop the inlet and go back to resolving.
                 print("[mock_headset] Marker stream lost -- waiting for next session.")
                 inlet = None
-                continue
-
-            if not samples:
                 continue
 
             for sample, ts in zip(samples, timestamps):
@@ -237,9 +253,10 @@ class MarkerListener(threading.Thread):
                     event = json.loads(sample[0])
                 except (json.JSONDecodeError, IndexError, TypeError):
                     continue
-                if event.get("event") == "flash" and event.get("is_target"):
+                if isinstance(event, dict) and event.get("event") == "flash" and event.get("is_target"):
+                    latency, amplitude = draw_p300_params(self._rng)
                     with self.lock:
-                        self.event_sink.append(ts)
+                        self.event_sink.append((ts, latency, amplitude))
                     self.n_targets_seen += 1
 
 
@@ -248,19 +265,13 @@ class MarkerListener(threading.Thread):
 # ----------------------------------------------------------------------
 
 def run_mock_stream(flat: set, noisy: set, railed: set, amplitude: float,
-                    inject_p300: bool, sfreq: float, seed: int):
-    """
-    Publish the synthetic EEG outlet and stream until interrupted.
-
-    Streams continuously and unconditionally: record_session.record()
-    skips its whole loop iteration on an empty EEG chunk, dropping any
-    markers pulled alongside it, so a stalling producer would silently
-    lose marker rows from the recording.
-    """
+                    inject_p300: bool, sfreq: float, seed: int,
+                    eeg_type: str = "EEG", marker_type: str = "Markers"):
+    """Publish the synthetic EEG outlet and stream until interrupted."""
     rng = np.random.default_rng(seed)
     n_channels = len(EEG_CHANNELS)
 
-    info = StreamInfo(STREAM_NAME, "EEG", n_channels, sfreq, "float32", "mock_unicorn_1")
+    info = StreamInfo(STREAM_NAME, eeg_type, n_channels, sfreq, "float32", "mock_unicorn_1")
     channels_desc = info.desc().append_child("channels")
     for ch in EEG_CHANNELS:
         channels_desc.append_child("channel").append_child_value("label", ch)
@@ -269,15 +280,15 @@ def run_mock_stream(flat: set, noisy: set, railed: set, amplitude: float,
     scales = np.array([channel_scale(ch, flat, amplitude) for ch in EEG_CHANNELS])
     gains = np.array([CHANNEL_GAIN[ch] for ch in EEG_CHANNELS])
 
-    target_onsets: list = []
+    target_events: list = []
     lock = threading.Lock()
     listener = None
     if inject_p300:
-        listener = MarkerListener(target_onsets, lock)
+        listener = MarkerListener(target_events, lock, marker_type=marker_type, seed=seed + 1)
         listener.start()
 
-    print(f"[mock_headset] Streaming '{STREAM_NAME}' "
-          f"({n_channels}ch @ {sfreq:g} Hz, microvolts). SYNTHETIC DATA.")
+    print(f"[mock_headset] Streaming '{STREAM_NAME}' (type {eeg_type}, "
+          f"{n_channels}ch @ {sfreq:g} Hz, microvolts). SYNTHETIC DATA.")
     if flat or noisy or railed:
         print(f"[mock_headset] Simulated bad contacts -- "
               f"flat: {sorted(flat) or '-'}, noisy: {sorted(noisy) or '-'}, "
@@ -285,56 +296,42 @@ def run_mock_stream(flat: set, noisy: set, railed: set, amplitude: float,
     print("[mock_headset] Ctrl+C to stop.")
 
     state = np.zeros(n_channels)
-    chunk_period = CHUNK_SAMPLES / sfreq
-    next_emit = time.perf_counter()
+    max_backlog = max(int(MAX_BACKLOG_S * sfreq), CHUNK_SAMPLES)
+    t0 = local_clock()
+    n_emitted = 0
 
     try:
         while True:
-            noise, state = background_noise_step(state, rng, CHUNK_SAMPLES)
-            # One-pole filtering shrinks variance a lot; renormalize so the
-            # visible peak-to-peak lands mid-band rather than near-flat.
-            chunk = noise * BACKGROUND_SCALE_UV * scales
+            first, n = next_chunk(t0, n_emitted, local_clock(), sfreq, max_backlog)
+            if n == 0:
+                time.sleep(POLL_S)
+                continue
+            if first > n_emitted:
+                print(f"[mock_headset] Fell {(first - n_emitted) / sfreq:.2f} s behind; "
+                      "skipped ahead (the stream now has a timestamp gap).")
+            sample_times = sample_timestamps(t0, first, n, sfreq)
+            n_emitted = first + n
 
-            now = local_clock()
-            sample_times = now + np.arange(CHUNK_SAMPLES) / sfreq
+            noise, state = background_noise_step(state, rng, n)
+            chunk = noise * BACKGROUND_SCALE_UV * scales
 
             if flat or noisy or railed:
                 for ch_idx, ch in enumerate(EEG_CHANNELS):
-                    chunk[:, ch_idx] += interference_uv(
-                        sample_times, ch, flat, noisy, railed)
+                    chunk[:, ch_idx] += interference_uv(sample_times, ch, flat, noisy, railed)
 
             if inject_p300:
                 with lock:
-                    # Drop events too old to still contribute, so this list
-                    # cannot grow without bound over a long session.
-                    target_onsets[:] = [
-                        t for t in target_onsets
-                        if now - t < P300_DURATION_S
-                    ]
-                    onsets = list(target_onsets)
-                for onset in onsets:
-                    # Per-event jitter: real P300 latency/amplitude varies
-                    # trial to trial, and identical responses would make the
-                    # synthetic ERP unrealistically clean.
-                    latency = P300_PEAK_LATENCY_S + rng.normal(0, 0.02)
-                    amp = P300_AMPLITUDE_UV * (1 + rng.normal(0, 0.15))
+                    target_events[:] = [e for e in target_events
+                                        if sample_times[0] - e[0] < P300_DURATION_S]
+                    events = list(target_events)
+                # Additive: at ~124 ms SOA several responses overlap in one window.
+                for onset, latency, amp in events:
                     response = p300_waveform(sample_times - onset, amplitude=amp,
-                                              peak_latency=latency)
-                    # Additive superposition matters: at 62 ms flash + 62 ms
-                    # ISI the SOA is ~124 ms, so several responses overlap
-                    # inside one 250-550 ms P300 window.
+                                             peak_latency=latency)
                     chunk += response[:, None] * gains[None, :]
 
-            outlet.push_chunk(chunk.astype(np.float32).tolist(), timestamp=sample_times[-1])
-
-            next_emit += chunk_period
-            sleep_s = next_emit - time.perf_counter()
-            if sleep_s > 0:
-                time.sleep(sleep_s)
-            else:
-                # Fell behind (system hiccup); resync rather than
-                # accumulating an ever-growing backlog of missed chunks.
-                next_emit = time.perf_counter()
+            outlet.push_chunk(chunk.astype(np.float32).tolist(), timestamp=float(sample_times[-1]))
+            time.sleep(POLL_S)
 
     except KeyboardInterrupt:
         print("\n[mock_headset] Stopped.")
@@ -366,22 +363,26 @@ def main():
         description="Publish a synthetic Unicorn-like EEG LSL outlet for "
                     "hardware-free demos of the P300 speller session flow.")
     parser.add_argument("--flat", action="append", default=[],
-                         help="Channel(s) to simulate as flat/disconnected "
-                              "(renders red). Repeatable or comma-separated.")
+                        help="Channel(s) to simulate as flat/disconnected "
+                             "(renders red). Repeatable or comma-separated.")
     parser.add_argument("--noisy", action="append", default=[],
-                         help="Channel(s) to simulate as noisy (renders yellow).")
+                        help="Channel(s) to simulate as noisy (renders yellow).")
     parser.add_argument("--railed", action="append", default=[],
-                         help="Channel(s) to simulate as railed/clipped (renders red).")
+                        help="Channel(s) to simulate as railed/clipped (renders red).")
     parser.add_argument("--amplitude", type=float, default=1.0,
-                         help="Global amplitude multiplier for the background EEG "
-                              "(default 1.0 = roughly 30-60 uV peak-to-peak).")
+                        help="Global amplitude multiplier for the background EEG "
+                             "(default 1.0 = roughly 30-60 uV peak-to-peak).")
     parser.add_argument("--no-p300", action="store_true",
-                         help="Do not inject P300 responses on target flashes "
-                              "(background noise only).")
+                        help="Do not inject P300 responses on target flashes "
+                             "(background noise only).")
     parser.add_argument("--sfreq", type=float, default=SFREQ,
-                         help="Sampling rate in Hz (default 250, matching the "
-                              "Unicorn Hybrid Black).")
+                        help="Sampling rate in Hz (default 250, matching the "
+                             "Unicorn Hybrid Black).")
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
+    parser.add_argument("--eeg-type", default="EEG",
+                        help="LSL type of the published EEG stream (default EEG).")
+    parser.add_argument("--marker-type", default="Markers",
+                        help="LSL type of the marker stream to listen to (default Markers).")
     args = parser.parse_args()
 
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
@@ -394,6 +395,8 @@ def main():
         inject_p300=not args.no_p300,
         sfreq=args.sfreq,
         seed=args.seed,
+        eeg_type=args.eeg_type,
+        marker_type=args.marker_type,
     )
 
 

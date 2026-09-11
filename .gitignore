@@ -10,6 +10,12 @@ results/route_a/
 collection/recordings/
 collection/thai_speller_logs/
 
+# Fitted classifier checkpoints and calibration -- derived from subject data
+models/
+
+# Runtime logs
+logs/
+
 # Python
 __pycache__/
 *.pyc

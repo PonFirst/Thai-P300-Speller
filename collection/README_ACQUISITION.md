@@ -48,52 +48,92 @@ BrainFlow dependency and never imports a Unicorn SDK.
 1. **Start the Unicorn LSL Interface** on the Windows VM / Linux box.
    Connect to the headset, click Start streaming. Confirm in that app
    that it is actively streaming before moving on.
-2. **Start `collection/record_session.py`** on this Mac.
-   `record_session.py` calls `pylsl.resolve_byprop('type', 'EEG',
-   timeout=5)` to find the `'UnicornEEG'` outlet from step 1 -- this
-   must already exist, or the resolve call (and the retry loop wrapped
-   around it) will keep polling and printing "waiting for stream(s)"
-   until it does. It ALSO calls `resolve_byprop('type', 'Markers',
-   timeout=5)` for the `'P300Markers'` outlet from step 3, but tolerates
-   that one not existing yet -- it polls/retries rather than failing
-   immediately, since step 3 is started after this script.
+2. **Start `collection/record_session.py`** on this Mac. It resolves the
+   EEG stream by type (`--eeg-type`, default `EEG`) with exponential
+   backoff: retries after 0.5 s, 1 s, 2 s, 4 s, then every 5 s, logging
+   each attempt with the elapsed time and the limit. If no EEG stream
+   appears within `--eeg-timeout` (default 30 s), it prints one error
+   line on stderr and exits with code 3. **EEG recording starts the
+   moment the EEG stream is found**; pre-stimulus EEG is kept.
 3. **Start `collection/checkerboard_stimulus.py`** (the PsychoPy
-   stimulus window) on this Mac. Once it opens its LSL outlet,
-   `record_session.py`'s marker-stream poll will find it and recording
-   proper begins.
+   stimulus window). The recorder keeps looking for the marker stream
+   (`--marker-type`, default `Markers`) from inside its recording loop,
+   with short probes (0.1 s, every 0.25 s), and opens the marker inlet
+   the moment it finds it. pylsl buffers nothing for an inlet that has
+   not been opened. If no marker stream appears within `--marker-timeout`
+   (default 120 s), the recorder prints a loud WARNING, repeats it every
+   30 s, and keeps recording EEG.
 
-**Why this exact order**: `record_session.py` needs BOTH outlets to
-exist before it can resolve them and start merging rows. Starting the
-EEG source first is required -- there is no retry path around "the
-headset isn't streaming at all." Starting the stimulus script last is a
-convenience, not a hard requirement: `record_session.py`'s marker-outlet
-resolution is a poll/retry loop specifically so you *can* start it before
-the stimulus script without a crash, but starting the recorder before
-the EEG source is not similarly tolerated (that step 1 -> step 2
-ordering matters most).
+**Why this order**: EEG must be streaming within 30 s of starting the
+recorder, or the recorder gives up (exit 3). The stimulus can start any
+time after the recorder. Wait for the recorder's
+`Recording EEG; searching for the marker stream.` line (`recording_started`
+in the JSON log) before starting it.
+
+**Known remaining marker loss.** The stimulus creates its marker outlet
+and pushes the first `trial_start` almost immediately. No LSL consumer
+resolves that fast, so the first trial's `trial_start` can still be
+lost. The recorder cannot prevent this without a stimulus change. It
+does detect it: every flash whose `trial_id` has no preceding
+`trial_start` from that outlet is flagged (`flash_without_trial_start`
+in the log, and `trials_without_trial_start` in the integrity summary).
+
+**Stimulus restarted mid-recording.** If the new outlet has a different
+uid, the recorder reconnects and logs `marker_outlet_replaced`. With the
+same `source_id`, pylsl also recovers the existing inlet on its own, but
+the first 1-2 markers of the new outlet can be missed. The stimulus
+renumbers trials from 0, so a repeated `trial_start`, or a repeated
+(`trial_id`, `flash_idx`) seconds later, is treated as a new run
+(`marker_run_restart_suspected`). Duplicate tracking then resets instead
+of discarding the new run's flashes.
 
 ## Running it
 
 On the Windows VM / Linux box: start the Unicorn LSL Interface and click
 Start.
 
-On this Mac:
+On this Mac, the normal path is the session panel. It starts the recorder,
+waits until the recorder's log reports `recording_started`, and only then
+starts the stimulus:
 
 ```bash
-conda activate p300speller
-python collection/record_session.py --out collection/recordings/session_001.csv
+./start_speller.sh
 ```
 
-Then, in a second terminal on this Mac, once `record_session.py` prints
-that it's waiting for the marker stream:
+To run the two by hand, call the environment's interpreter by path. On this
+machine a pipenv virtualenv earlier on `PATH` shadows `python` even after
+`conda activate`, and would run the wrong packages.
 
 ```bash
-conda activate p300speller
-python collection/checkerboard_stimulus.py
+PY="$(conda info --base)/envs/p300speller/bin/python"
+"$PY" collection/record_session.py --out collection/recordings/session_001.csv
 ```
 
-Stop recording with Ctrl+C in the `record_session.py` terminal (or pass
-`--duration <seconds>` to stop automatically).
+Then, in a second terminal, once `record_session.py` logs that it is
+recording and searching for the marker stream:
+
+```bash
+"$PY" collection/checkerboard_stimulus.py
+```
+
+Useful flags: `--duration <s>` (stop automatically, counted from when EEG
+is found), `--eeg-timeout`, `--marker-timeout`, `--eeg-type` /
+`--marker-type` (for isolated tests; never reuse the production types in
+tests), and `--log-file`. `--poll-interval` and `--max-wait` still work.
+They now set the backoff cap and the EEG timeout.
+
+## Stopping and exit codes
+
+Stop with Ctrl+C, or send SIGTERM (what the session panel's Stop button
+does). The two are handled identically. Rows still held in memory are
+written, the integrity summary is written, and the process exits with 0.
+
+| Code | Meaning |
+|---|---|
+| 0 | Normal stop: Ctrl+C, SIGTERM, or `--duration` elapsed |
+| 1 | Unexpected error (details and traceback in the JSON log) |
+| 2 | Bad arguments or output path problem, including `--out` already existing. The recorder never overwrites a file |
+| 3 | EEG stream not found within `--eeg-timeout` |
 
 ## Output format
 
@@ -105,12 +145,22 @@ timestamp, Fz, F3, C4, Cz, Pz, P3, O2, O1, marker_json_or_empty,
 trial_id, flash_idx, group_json, is_target, target_char_idx
 ```
 
-- `timestamp`: LSL local_clock() timestamp, common to both streams
-  (the whole point of using LSL is a shared clock domain).
+- `timestamp`: LSL timestamp, mapped into this Mac's `local_clock()`
+  domain (the inlets use `proc_clocksync`). Without that mapping, EEG
+  timestamps from the VM would stay in the VM's clock and could not be
+  aligned with local markers. Whether EEG also uses `proc_dejitter` is
+  one switch shared with the inference service:
+  `pipeline/constants.EEG_INLET_DEJITTER` (currently off, so integrity
+  checks see timestamps as delivered). The effective flags are recorded
+  in the log and the integrity summary.
 - `Fz`...`O1`: the 8 Unicorn channels, one row per EEG sample (250 Hz).
 - `marker_json_or_empty`: the raw JSON string pushed by
-  `checkerboard_stimulus.py` for this row if a marker landed closest to
-  this EEG sample's timestamp, else empty.
+  `checkerboard_stimulus.py` if a marker landed closest to this EEG
+  sample's timestamp, else empty. Markers are timestamped at the GPU
+  flip and can arrive after the EEG around them. The recorder therefore
+  holds the most recent 1 s of rows (`--holdback`) before writing, so a
+  late marker still reaches its true nearest sample, even across chunk
+  boundaries.
 - `trial_id`, `flash_idx`, `group_json`, `is_target`, `target_char_idx`:
   the same marker JSON pre-parsed into columns, so downstream analysis
   never has to re-parse the JSON string. Empty for every non-marker row.
@@ -119,20 +169,89 @@ trial_id, flash_idx, group_json, is_target, target_char_idx
   logged, and its absence is what made that data useless for replay
   (see docs/CLAUDE.md and stopping/replay.py). Do not regress this.
 
-## Pre-session signal sanity check
+### Rows with all 8 channels NaN
 
-`record_session.py` pulls 2 seconds of real EEG data before the actual
-session starts and checks each channel's peak-to-peak amplitude falls
-in a plausible range (roughly 1-200 uV). It warns LOUDLY (printed
-`*** WARNING ***` lines, not a silent pass-through) if a channel looks
-flat/disconnected or clipped/railed/wrong-units. This does not abort the
-session automatically -- investigate any warning before trusting that
-session's data, don't just proceed past it.
+These rows are not samples. They are always identified by
+`marker_json_or_empty`:
+
+- **`{"event": "stream_gap_start", ...}`**: EEG stopped arriving. It is
+  written as soon as the stream has been silent for 0.5 s
+  (`--silence-threshold`), so a crash mid-outage still leaves the gap
+  visible. It is also written when timestamps jump by more than 0.1 s
+  (`--gap-jump`) without a stall (`"detected_by": "timestamp_jump"`).
+  Parsed marker columns are empty.
+- **`{"event": "stream_gap_end", "duration_s": ..., "n_missing_est": ...,
+  "last_sample_ts": ..., "first_sample_ts": ...}`**: written when EEG
+  resumes. `duration_s` is the span of missing samples, taken from the
+  timestamps on either side. The recorder keeps the inlet open through
+  an outage; pylsl reconnects on its own when an outlet with the same
+  `source_id` returns. Parsed marker columns are empty.
+- **A stimulus marker on its own row**: `timestamp` is the marker's own
+  LSL timestamp, and the parsed marker columns are filled. This happens
+  when the marker could not attach to its nearest sample, for one of
+  three reasons: that sample was already written (marker more than
+  `--holdback` late); no EEG sample lies within 1.5 sample periods (the
+  marker falls inside a gap); or that sample already carries an earlier
+  marker. Every case is logged. **No marker is ever dropped** except an
+  exact duplicate, as described in the integrity summary below.
+
+Consumers must take EEG only from rows with finite channels, and events
+from every row with a non-empty `marker_json_or_empty`. The file is not
+guaranteed to be sorted by timestamp. A marker row written late sits after
+samples that were already on disk. Non-monotonic timestamps from the
+device are flagged but never reordered or dropped.
+
+### Side files
+
+- **`<csv>.log.jsonl`** (or `--log-file`): one JSON object per line with
+  `time`, `level`, `event`, `msg`, and event-specific fields. The console
+  shows the same messages concisely (warnings on stderr). A session can
+  be diagnosed from this file alone. Key events:
+  - startup: `recorder_start` (full config), `eeg_resolve_attempt`,
+    `eeg_connected`, `eeg_not_found`
+  - markers: `marker_connected`, `marker_timeout`, `marker_outlet_replaced`,
+    `marker_outlet_not_visible`, `marker_run_restart_suspected`
+  - signal: `sanity_channel` / `sanity_check`, `stream_gap_start` /
+    `stream_gap_ongoing` / `stream_gap_end` / `stream_gap_timestamp_jump`,
+    `eeg_rate_drift`
+  - integrity: `eeg_timestamp_non_monotonic`, `duplicate_flash_marker`,
+    `flash_without_trial_start`, `marker_standalone_row`
+  - exit: `integrity_summary`, `shutdown` (reason and rows written)
+- **`<csv>.integrity.json`**: written at exit, including after SIGTERM:
+  - `shutdown_reason`, `exit_code`
+  - `issues`: a human-readable list, empty for a clean session
+  - `rows_written` (EEG / gap / standalone marker)
+  - `sanity_check`, `inlet_processing_flags`, `marker_connections`
+  - `gaps` (durations and missing-sample estimates)
+  - `effective_rate_hz` (min/max over rolling 10 s windows)
+  - `trials_without_trial_start`, `standalone_marker_rows_by_reason`
+  - `counts`:
+    - non-monotonic EEG timestamps, split into duplicate and backwards
+    - irregular timestamp steps: above 1.5 periods but below the gap
+      threshold, counted only
+    - rate-drift warnings: beyond ±2 % of nominal
+    - duplicate flash markers: same outlet, `trial_id` and `flash_idx`
+      within 1 s; only the first is kept
+    - redelivered markers: identical payload and timestamp, dropped
+    - flashes without `trial_start`
+    - marker reconnections
+
+## Signal sanity check (first 2 s of recording)
+
+This check no longer blocks before recording. The recorder evaluates
+each channel's peak-to-peak amplitude over the first 2 s of samples as
+they are recorded (500 samples at 250 Hz), against the same
+plausibility band as before (1-200 uV). It warns LOUDLY (`*** WARNING
+***` lines on stderr, plus a `sanity_check` record in the log and
+summary) if a channel looks flat/disconnected or clipped/railed/wrong
+units. It does not abort the session. Investigate any warning before
+trusting the data. If the session ends before 2 s of EEG arrives, the
+check runs on what was received and is marked `partial`.
 
 ## Troubleshooting
 
-- **`record_session.py` hangs on "Waiting for stream(s): EEG
-  ('UnicornEEG')"** -- the Unicorn LSL Interface on the VM/Linux box
+- **`record_session.py` logs "Waiting for EEG stream" and exits with
+  code 3 after `--eeg-timeout`** -- the Unicorn LSL Interface on the VM/Linux box
   either isn't running, isn't actually streaming (check it says
   "Streaming" in its own UI, not just "Connected"), or is unreachable
   over the network (VM network mode, firewall). LSL discovery uses UDP

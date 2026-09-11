@@ -2,130 +2,135 @@
 
 ## What this is
 
-PhD application portfolio work (targeting CMU ECE/BME). A Thai-language P300
-visual speller extending Pananookooln et al. 2022 (AIT Brain Lab): checkerboard
-paradigm, 72 Thai characters, 8-channel EEG at 250 Hz (g.tec Unicorn Hybrid Black).
+PhD application portfolio work (targeting CMU ECE/BME): a Thai-language P300 visual speller extending Pananookooln et al. 2022 (AIT Brain Lab). Checkerboard paradigm, 72 Thai characters, 8-channel EEG at 250 Hz (g.tec Unicorn Hybrid Black).
 
-- **Classifier** (xDAWN-family, `classifiers/`) is built and validated; not
-  the contribution.
-- **The contribution** is a Bayesian dynamic-stopping module (`stopping/`):
-  fixed confidence threshold + a Thai character-level LM prior.
-- **Boundary-aware thresholding is descoped.** Don't build boundary-probability
-  or word-segmentation logic unless the user reopens it.
-- The novelty angle for the paper is **not yet decided** — don't assume one.
+- **The classifier** (xDAWN + RegLDA, `classifiers/`) is validated and not the contribution.
+- **The contribution** is Bayesian dynamic stopping (`stopping/`): a fixed confidence threshold plus a Thai character-level LM prior.
+  - The LM is an n-gram today.
+  - The owner will build a character-level Transformer later. It will be a new `language_model` type in `pipeline/manifest.py` plus a builder in `pipeline/language_model.py`.
+- **Boundary-aware thresholding is descoped.** The paper's novelty angle is **not decided**; don't assume one.
 
 ## Hard constraints — do not relitigate
 
-- **Hardware path.** Dev machine is an Apple M3 Mac. BrainFlow's Unicorn board
-  class is compiled out on macOS (`unicorn_board.h` is wrapped in
-  `#if defined __linux__ || defined _WIN32`), and g.tec's Unicorn Suite /
-  LSL Interface is Windows-only. Acquisition = vendor LSL Interface on a
-  Windows-on-ARM VM (USB dongle passed through) or a Linux box. Everything in
-  this repo is a pure LSL consumer. Never suggest `pip install brainflow`.
-- **The user implements the core stopping math.** `BayesianStoppingController.reset()`,
-  `.llr()`, `.update()` in `stopping/bayesian_stopping.py` must stay
-  `raise NotImplementedError` — deliberate, for interview mastery. Do not fill
-  them in, even to "make tests pass". Everything around them is fair game.
-- **Every recording logs full per-flash metadata.** The reference
-  implementation logged only binary target/non-target, making its data
-  useless for replay. Never regress this.
+- **Hardware path.**
+  - The dev machine is an Apple M3 Mac. BrainFlow's Unicorn class is compiled out on macOS, and g.tec's tools are Windows-only.
+  - Acquisition runs through the vendor LSL bridge on a Windows-on-ARM VM or a Linux box; everything in this repo is a pure LSL consumer.
+  - Never suggest `pip install brainflow`.
+- **The owner implements the core stopping math.**
+  - `BayesianStoppingController.reset()`, `.llr()`, `.update()` stay `raise NotImplementedError` until the owner fills them in.
+  - Never implement, rewrite, or "fix" them, not even to make tests pass or inside test doubles. Mocks return scripted literal values.
+  - Everything around them is fair game.
+- **Every recording logs full per-flash metadata.** Never regress this.
+- **Don't modify the stimulus or the classifier without an explicit ask.**
+  - `collection/checkerboard_stimulus.py` was out of scope in the last round.
+  - `classifiers/` is validated: fit it, don't change it.
 
-## Shared interface contract
+## Environment
 
-- EEG stream: `type='EEG'`, 8 ch, 250 Hz, float32, **microvolts**. Real device
-  name `UnicornEEG`; the mock is `MockUnicornEEG`.
-- Marker stream: `name='P300Markers'`, `type='Markers'`, 1 ch, irregular, string.
-  One JSON event per sample, timestamped at `win.flip()` time:
-  ```json
-  {"event": "trial_start", "trial_id": 1, "target_char_idx": 15, "target_char": "ก"}
-  {"event": "flash", "trial_id": 1, "flash_idx": 7, "group": [3,11,19,27,35,43], "is_target": false}
-  {"event": "trial_end", "trial_id": 1}
-  ```
-- `collection/characters_th.json` is the single source of truth for character ↔
-  index (72 entries). Load it; never hardcode a character list.
-- All consumers resolve streams **by type, never by name** — that's why the mock
-  works with zero changes to the real path.
+- A pipenv virtualenv (`storefront`) sits earlier on `PATH` than conda, so **`python` is the wrong interpreter even after `conda activate p300speller`**. Always call the env's interpreter by path: `PY="$(conda info --base)/envs/p300speller/bin/python"`.
+- `start_speller.sh` does this for you, and the GUI launches its child processes with `sys.executable`.
+- GUI tests need `QT_QPA_PLATFORM=offscreen`.
+
+## Contracts
+
+`docs/INTERFACES.md` is the reference for how the pieces talk to each other. Code in `pipeline/` defines the contracts; import it, never redefine it.
+
+| What | Where |
+|---|---|
+| Stream names/types, channel order, 250 Hz, µV thresholds, the dejitter switch | `pipeline/constants.py` |
+| `P300Inference` events (service → GUI), strictly validated on both ends | `pipeline/events.py` |
+| `session_manifest.json`: which model files a run uses (sha256-verified, fingerprinted) | `pipeline/manifest.py` |
+| Quality levels + quality gate (shared by GUI map and service) | `pipeline/quality.py` |
+| Epoch cutting (shared by fit script and service: train/serve parity) | `pipeline/epoching.py` |
+| Marker JSON (`trial_start` / `flash` / `trial_end`) | `collection/checkerboard_stimulus.py` |
+| Recorder CSV + gap rows + `<csv>.log.jsonl` + `<csv>.integrity.json` | `collection/record_session.py` docstring |
+
+- **Resolution:** all consumers find streams **by type**, and every tool takes `--eeg-type` / `--marker-type` / `--inference-type`.
+- **`P300Inference` stream type:** it is deliberately not `Markers`.
 
 ## Repo map
 
 ```
-start_speller.sh            # entry point: ./start_speller.sh [--demo]
+start_speller.sh                 ./start_speller.sh [--demo] [--manifest PATH] -> Qt panel
 collection/
-  session_gui.py            # control panel: live traces, scalp-quality map, target entry, settings;
-                            #   Start spawns record_session.py, then checkerboard_stimulus.py
-  record_session.py         # LSL consumer -> CSV; owns EEG_CHANNELS + SANITY_PTP_MIN/MAX_UV
-  checkerboard_stimulus.py  # PsychoPy matrix, cue phase, JSON markers at flip time
-  flash_sequence.py         # pure checkerboard grouping logic (no PsychoPy) — unit-tested
-  mock_headset.py           # synthetic EEG outlet + P300 injection on target flashes
-  README_ACQUISITION.md     # machine topology + startup order
-  checkerboard.py, checkerboard_experiment.py, test_sync.py   # LEGACY, pre-contract — don't use
+  session_gui_qt.py              PySide6 panel: traces, scalp map, target entry, settings, composed text,
+                                 confidence gauge; launches service -> recorder -> stimulus
+  gui_logic.py                   all panel logic without Qt (tested): settings, paths, connection state,
+                                 inference display model, SessionOrchestrator
+  session_gui.py                 LEGACY Tkinter panel, kept as a fallback
+  record_session.py              hardened LSL recorder (backoff, gap rows, integrity checks, JSON logs)
+  checkerboard_stimulus.py       PsychoPy matrix, cue phase, JSON markers at flip time
+  flash_sequence.py              pure checkerboard grouping logic
+  mock_headset.py                synthetic EEG outlet: fault flags, P300 on target flashes, fixed sample grid
+  README_ACQUISITION.md          machine topology, startup order, recorder output and exit codes
+  checkerboard.py, checkerboard_experiment.py, test_sync.py   LEGACY, pre-contract; don't use
+pipeline/
+  constants.py quality.py events.py manifest.py epoching.py   shared contracts
+  inference_service.py           live inference: LSL in, P300Inference out (InferenceEngine is pure)
+  fit_from_recording.py          calibration CSV -> classifier checkpoint + Platt calibration + manifest
+  classifier_io.py               checkpoint save/load, stream compatibility, channel-label policy
+  language_model.py              LM factory (uniform | ngram), prior validated at the boundary
 stopping/
-  bayesian_stopping.py      # log_normalize (done) + controller (3 user-owned stubs)
-  calibrate.py              # Platt scaling, ECE, reliability diagram
-  lm_prior.py               # ThaiNgramLM: order 3-4, add-alpha, backoff
-  replay.py                 # simulate_trial, wolpaw_itr, run_sweep
-  validate_offline.py       # code validation on a FABRICATED grid — not a research result
-  flash_selector.py         # info-gain ordering stubs — out of current scope
-classifiers/                # benchmark_all.get_pipelines() = single source of the 5 pipelines
-config.py, data_loader.py   # MOABB/BNCI EDA path (volts!)
-class_balance.py, signal_quality.py, erp_analysis.py, topography.py, run_eda.py
-tests/                      # flash_sequence, bayesian_stopping, calibrate, lm_prior, mock_headset
+  bayesian_stopping.py           log_normalize (done) + controller (3 owner-implemented stubs)
+  calibrate.py lm_prior.py replay.py   Platt/ECE, ThaiNgramLM, replay + Wolpaw ITR
+  validate_offline.py            code validation on a FABRICATED grid, not a research result
+  flash_selector.py              info-gain ordering stubs, out of scope
+tools/
+  fake_inference_publisher.py    scripted P300Inference stream for GUI QA
+  e2e_demo_smoke.sh              no-hardware end to end: record -> fit -> service ready (opens a window)
+classifiers/                     benchmark_all.get_pipelines() = single source of the 5 pipelines
+config.py, data_loader.py        MOABB/BNCI EDA path (volts!)
+tests/                           see TESTING.md; test_fault_injection.py = cross-component scenarios
+docs/INTERFACES.md, TESTING.md
 ```
 
 ## Running
 
 ```bash
-./start_speller.sh --demo       # no hardware: mock EEG + GUI; recordings prefixed demo_
-./start_speller.sh              # real headset; start the Unicorn LSL Interface FIRST
-python collection/mock_headset.py --flat P3 --noisy C4 --railed O1   # exercise quality colors
-python collection/checkerboard_stimulus.py --targets "กข" --n-repetitions 2 --windowed
-pytest tests/ -q                # expected: 28 passed, 4 failed (the NotImplementedError stubs)
+./start_speller.sh --demo                       # no hardware: mock EEG + panel; recordings prefixed demo_
+./start_speller.sh                              # real headset; start the Unicorn LSL Interface FIRST
+$PY collection/mock_headset.py --flat P3 --noisy C4 --railed O1       # exercise quality colours
+$PY -m pipeline.fit_from_recording --recording collection/recordings/<file>.csv --id subject_001
+$PY -m pipeline.inference_service --manifest session_manifest.json    # normally launched by the panel
+$PY tools/fake_inference_publisher.py --include-malformed             # drive the composed-text panel
+QT_QPA_PLATFORM=offscreen $PY -m pytest tests/ -q
 ```
-Conda env: `p300speller`. Recordings go to `collection/recordings/` (gitignored).
+
+- **Expected tests:** all pass except the 4 intentional stubs in `tests/test_bayesian_stopping.py`.
+- **Output locations:** recordings go to `collection/recordings/` and models to `models/` (both gitignored). Demo artifacts are always `demo_`-prefixed.
 
 ## Known gotchas — don't silently reintroduce
 
-1. **Units split by subsystem.** The collection side (LSL, recorder, GUI,
-   mock) works in **microvolts**. The MOABB path (`data_loader.py`,
-   `config.PTP_REJECT_THRESHOLD_V`) works in **volts**; `load_arrays()`
-   divides out `unit_factor` so it matches the Epochs path. An earlier unit
-   bug inflated amplitudes ~1e6× and rejected ~100% of epochs silently.
-   Never mix the two sets of thresholds.
-2. **Recorder drops the first ~2.7 s of markers — UNFIXED.** `record()`
-   resolves both inlets, then runs the 2 s sanity check before its first
-   marker pull. pylsl doesn't buffer an inlet until it's opened, so trial 0
-   loses its `trial_start` (the ground-truth label) and ~20 flashes. This was
-   reproduced end-to-end with the mock, and real sessions hit it too.
-   Proposed fix: call `marker_inlet.open_stream()` right after resolution.
-   Awaiting user approval.
-3. **Matrix orientation is unresolved.** Flat-index parity only gives a true 2D
-   checkerboard when n_cols is odd. The stimulus defaults to 8×9 (odd,
-   adjacency-safe); the originally stated spec was 9×8 (even, NOT safe
-   without reordering characters). See `flash_sequence.py`'s docstring and
-   run `validate_no_adjacent_co_flash()` before collecting real data.
-4. **`characters_th.json` is `"verified": false`.** Confirm its order against
-   `th_offline_cb.py` before real data collection.
-5. **Montage is unverified.** `EEG_CHANNELS` = Fz, F3, C4, Cz, Pz, P3, O2, O1 is
-   not g.tec's default layout (Fz, C3, Cz, C4, Pz, PO7, Oz, PO8). Confirm it
-   against the physical device. The GUI's `DISPLAY_ORDER` is separate from
-   stream index order on purpose.
-6. **Thai font missing.** `THSarabunNew.ttf` isn't in the repo, so the fallback
-   font likely breaks tone marks. Check with `verify_thai_font_rendering()`.
-7. **BNCI2014-008/009 expose no row/column identity.** Only flash-level
-   metrics are valid there — no character accuracy or ITR claims.
-8. **Baseline correction** (`BASELINE_WINDOW = (-0.2, 0.0)`) was added after an
-   Fz-dominant sub-3 µV artifact appeared without it. Don't remove it.
-9. **CV is grouped by subject, not by trial.** Don't present it as fully
-   leakage-proof.
-10. **~5:1 class imbalance.** Always report balanced accuracy / AUC alongside
-    accuracy.
-11. **FgMDM and TS+RegLDA have identical AUC — expected, not a bug.** pyriemann
-    0.12's FGDA uses the same `LDA(solver="lsqr", shrinkage="auto")` on the
-    same tangent-space features, so both rank epochs identically. Balanced
-    accuracy differs because their decision thresholds differ.
-12. **Stale references.** `character_decoder.py` is cited in docstrings but
-    doesn't exist. `setup.py`'s docstring names `day2_moabb_setup.py`.
-    `validate_offline.py` still prints `theta_base`.
+1. **Units split by subsystem.**
+   - Collection, pipeline, and GUI work in **µV**.
+   - The MOABB path (`data_loader.py`, `config.PTP_REJECT_THRESHOLD_V`) works in **volts**.
+   - Never mix the two sets of thresholds. An earlier unit bug silently rejected ~100 % of epochs.
+2. **LSL never delivers samples pushed before a consumer subscribed.**
+   - The stimulus waits for a marker consumer (15 s timeout), plus 2 s for the rest, before its first trial (`wait_for_marker_consumers`). Without this, the first `trial_start` of every run was lost.
+   - If no consumer appears, it warns and starts anyway. The recorder still flags any trial without a `trial_start` (`trials_without_trial_start`).
+   - The recorder records EEG first and opens the marker inlet the moment it resolves, which fixed the older 2.7 s marker loss.
+3. **An unopened LSL inlet buffers nothing.** Call `open_stream()` right after creating an inlet (measured: 0/10 markers received without it).
+4. **LSL doesn't replay samples to late subscribers.** The service re-sends `ready` every 2 s, and the GUI trusts the stream desc's fingerprint.
+5. **Timestamps are recorded as delivered: clock sync, no dejitter.**
+   - Measured: dejitter leaves clean outlets unchanged but silently shifts up to 19 ms to hide out-of-order stamps.
+   - If the real device proves to need it, flip `EEG_INLET_DEJITTER` in `pipeline/constants.py`; the recorder and service follow it together.
+6. **Flat channels:** peak-to-peak over the 1 s window alone kept a failed contact green for about a second. A channel is now also red when any 100 ms segment is below 1 µV. The thresholds themselves are unchanged.
+7. **Matrix orientation is unresolved.** The stimulus defaults to 8×9 (odd columns, adjacency-safe). 9×8 is NOT safe under flat-index parity without reordering the characters.
+8. **`characters_th.json` is `"verified": false`.** Confirm it against `th_offline_cb.py` before real collection.
+9. **The montage is unverified.** `EEG_CHANNELS` = Fz, F3, C4, Cz, Pz, P3, O2, O1 is not g.tec's default layout.
+   - The real device's channel labels are unknown.
+   - The service warns on generic labels and refuses when the electrode names differ.
+   - See TESTING.md H1/H2.
+10. **Thai fonts.**
+    - The GUI uses Sarabun, falling back to Thonburi; its tone-mark stacking is verified by an automated test.
+    - The PsychoPy stimulus still falls back from the missing `THSarabunNew.ttf` and is unverified.
+11. **BNCI2014-008/009 expose no row/column identity.** Report flash-level metrics only there.
+12. **Baseline correction** (`BASELINE_WINDOW`) fixed a sub-3 µV Fz artifact on the MOABB path. Don't remove it.
+13. **CV is grouped by subject, not by trial, on BNCI.** Fit-script calibration is out-of-fold, grouped by `trial_id`.
+14. **~5:1 class imbalance.** Report balanced accuracy / AUC.
+15. **FgMDM and TS+RegLDA have identical AUC — expected.** pyriemann 0.12's FGDA runs the same shrinkage LDA on the same features.
+16. **Mock-data AUC is low (~0.6) by design** (a 6 µV P300 in ~9 µV single-epoch noise). It isn't a classifier result.
+17. **Stale references.** `character_decoder.py` is cited but doesn't exist; `setup.py` names `day2_moabb_setup.py`; `validate_offline.py` prints `theta_base`.
 
 ## Results so far (flash-level, subjects 1–5, GroupKFold by subject)
 
@@ -139,29 +144,20 @@ From `results/all_classifiers_results.csv` (AUC / balanced accuracy):
 | xDAWNcov+MeanField | 0.640 / 0.560 | 0.835 / 0.714 |
 | xDAWN+LR | 0.679 / 0.631 | 0.718 / 0.621 |
 
-- **The best pipeline differs by dataset.** Tangent-space methods lead on 008;
-  MDM/MeanField lead on 009. Report that, don't average it away.
-- An earlier `benchmark_all.py` run reported FgMDM at 0.769 / 0.694 on 008,
-  which this CSV doesn't reproduce. Reconcile the two run configurations
-  before citing either.
-- Subject 4 was the worst fold across all pipelines in earlier runs. Treat it
-  as a reportable finding, not noise.
+- **The best pipeline differs by dataset.** Report that; don't average it away.
+- **Unreconciled earlier run.** A `benchmark_all.py` run reported FgMDM at 0.769 / 0.694 on 008. Reconcile the configurations before citing either.
+- **Subject 4 was the worst fold everywhere.** Treat it as a finding.
 
 ## Conventions
 
-- No day-number prefixes in filenames.
-- New pipelines go in `get_pipelines()`; classifier files stay independently
-  runnable.
-- Import shared constants instead of redeclaring them (`EEG_CHANNELS`,
-  `SANITY_PTP_*` from `record_session`; `P300_SEARCH_WINDOW` from `config`).
-- Keep pure logic separate from I/O so it's testable without hardware
-  (`flash_sequence` vs `checkerboard_stimulus`, the pure functions in
-  `mock_headset`). Tests on thresholds must check every channel across
-  several seeds with margin — single-seed tests have already missed two
-  boundary bugs here.
-- Sanity-check real output against plausible ranges (scalp EEG ≈ single digits
-  to a few hundred µV) before trusting or plotting it.
-- Synthetic data must identify itself (`MockUnicornEEG` name, `demo_` prefix,
-  GUI banner).
-- Cross-check library behavior against source/docs before relying on it. That
-  habit caught gotchas 1, 7 and 11.
+- **Filenames:** no day-number prefixes.
+- **Pipelines:** new ones go in `get_pipelines()`.
+- **Shared constants:** import them; don't redeclare.
+- **Pure logic apart from I/O:** keep it separate, and test it without hardware.
+  - Examples: `flash_sequence`, `gui_logic`, `InferenceEngine`, `mock_headset`'s pure functions.
+- **Threshold tests:** check every channel across several seeds, with margin. Single-seed tests have missed two boundary bugs here.
+- **Real-LSL tests:** use randomized stream types, never the production ones.
+- **Tests never write into the repo.**
+- **Synthetic data must identify itself:** `MockUnicornEEG`, the `demo_` prefix, the GUI banner.
+- **Sanity checks:** check real output against plausible ranges before trusting it.
+- **Library behaviour:** check it against source or measurement before relying on it. That habit found gotchas 1, 3, 5 and 15.
