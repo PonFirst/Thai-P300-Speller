@@ -5,6 +5,13 @@ Builds on your Day 2 setup script: same paradigm.get_data() call, but this
 version also fetches MNE Epochs objects (return_epochs=True) since several
 EDA modules (topography.py, erp_analysis.py) need MNE's Evoked/topomap
 machinery, not just raw arrays.
+
+Baseline correction: P300() is constructed with baseline=BASELINE_WINDOW
+(config.py, currently -0.2 to 0.0s), so all data returned here has the
+pre-stimulus mean subtracted per epoch/channel. Earlier runs without this
+(before this change) showed an Fz-dominant, sub-3uV grand-average peak on
+BNCI2014-008 -- inconsistent with the expected centro-parietal P300
+topography. Confirm whether that anomaly resolves now.
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ import pandas as pd
 from moabb.datasets import BNCI2014_008, BNCI2014_009
 from moabb.paradigms import P300
 
-from config import DATASET_CONFIG
+from config import BASELINE_WINDOW, DATASET_CONFIG
 
 DATASETS = {
     "BNCI2014_008": BNCI2014_008,
@@ -40,7 +47,7 @@ def load_arrays(name: str, subjects: list[int] | None = None):
     if name not in DATASETS:
         raise ValueError(f"Unknown dataset {name!r}. Choose from {list(DATASETS)}")
     dataset = DATASETS[name]()
-    paradigm = P300()
+    paradigm = P300(baseline=BASELINE_WINDOW)
     subjects = subjects or dataset.subject_list
     X, y, metadata = paradigm.get_data(dataset=dataset, subjects=subjects)
     X = X / dataset.unit_factor  # undo MOABB's built-in V -> uV scaling
@@ -61,7 +68,7 @@ def load_epochs(name: str, subjects: list[int] | None = None) -> mne.Epochs:
     if name not in DATASETS:
         raise ValueError(f"Unknown dataset {name!r}. Choose from {list(DATASETS)}")
     dataset = DATASETS[name]()
-    paradigm = P300()
+    paradigm = P300(baseline=BASELINE_WINDOW)
     subjects = subjects or dataset.subject_list
     epochs, y, metadata = paradigm.get_data(
         dataset=dataset, subjects=subjects, return_epochs=True

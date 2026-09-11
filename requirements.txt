@@ -1,0 +1,17 @@
+# P300 Speller project dependencies. Install into the p300speller conda env:
+#   conda activate p300speller
+#   pip install -r requirements.txt
+
+# Analysis / classifiers / EDA
+numpy
+pandas
+scikit-learn
+mne
+moabb
+pyriemann
+matplotlib
+
+# Data collection (checkerboard.py, checkerboard_experiment.py, test_sync.py)
+psychopy
+pylsl
+tables  # PyTables -- pulled in by psychopy's iohub; pin here to keep it matched to numpy's ABI

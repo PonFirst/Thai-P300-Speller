@@ -54,4 +54,4 @@ PTP_REJECT_THRESHOLD_V = 100e-6
 BASELINE_WINDOW = (-0.2, 0.0)
 
 # Output directory for all EDA figures.
-OUTPUT_DIR = "eda_outputs"
+OUTPUT_DIR = "results/eda_outputs"

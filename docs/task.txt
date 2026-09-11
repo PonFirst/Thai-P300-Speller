@@ -1,0 +1,72 @@
+TASK: Create all_classifiers.py
+
+GOAL
+Run all 5 existing classifier pipelines on BOTH BNCI2014_008 and
+BNCI2014_009, and produce one easy-to-read comparison table covering both
+datasets at once.
+
+DO NOT redefine the pipelines from scratch. Import and reuse
+get_pipelines() from benchmark_all.py -- that function already returns all
+5 pipelines (xDAWN+LR, xDAWNcov+MDM, xDAWNcov+FgMDM, xDAWNcov+MeanField,
+xDAWNcov+TS+RegLDA) in the exact form already validated in this repo.
+Redefining them here would risk silent drift between files.
+
+STEPS
+
+1. For EACH dataset in ["BNCI2014_008", "BNCI2014_009"]:
+   a. Load data via data_loader.py's load_arrays(dataset_name, subjects=...).
+      Default to subjects=[1,2,3,4,5] for both datasets so runtime stays
+      reasonable, but expose subjects as a CLI argument (see below).
+   b. Build groups = metadata["subject"].values (same pattern as every
+      existing classifier file's __main__ block).
+   c. Run GroupKFold cross-validation (same n_splits=5 pattern used
+      elsewhere in this repo) for every pipeline from get_pipelines(),
+      using IDENTICAL folds across pipelines WITHIN one dataset (reuse the
+      "fix folds once up front" pattern from benchmark_all.py's
+      run_benchmark()). Folds do NOT need to match across the two datasets
+      -- they have different subjects/sizes, so this isn't meaningful.
+   d. Record mean AUC, mean balanced accuracy, and mean accuracy per
+      pipeline per dataset.
+
+2. Combine both datasets' results into ONE table, structured so a human can
+   compare pipelines across datasets at a glance. Concretely: one row per
+   pipeline, with columns grouped by dataset, e.g.:
+
+     Pipeline             | BNCI2014_008 AUC | BNCI2014_008 BalAcc | BNCI2014_009 AUC | BNCI2014_009 BalAcc
+     xDAWNcov+FgMDM        | 0.769            | 0.694                | ...              | ...
+     xDAWN+LR              | 0.749            | 0.688                | ...              | ...
+     ...
+
+   Sort rows by mean AUC averaged across both datasets, descending, so the
+   best all-around pipeline is at the top.
+
+3. Print the table to console using pandas' to_string() with float_format
+   fixed to 3 decimal places (match the formatting style already used in
+   benchmark_all.py). Also save it as all_classifiers_results.csv.
+
+4. Add a CLI (argparse, matching run_eda.py's existing style) with:
+   --subjects (nargs="*", default [1,2,3,4,5], applied to both datasets)
+   --n-splits (default 5)
+   --nfilter (default 4, passed through to get_pipelines())
+
+5. Print one extra summary line per dataset before the combined table:
+   epoch count, class imbalance ratio, and which pipeline won on THAT
+   dataset alone -- useful for noticing if the best pipeline differs
+   between the two datasets, which would itself be a real finding worth
+   flagging, not something to average away silently.
+
+CONSTRAINTS / THINGS TO GET RIGHT
+- This will take real time to run on real data (10 pipeline-runs x 5 folds
+  x 2 datasets = 50 fits minimum). Print progress per dataset/pipeline as
+  you go, don't run silently for minutes.
+- Match the existing repo's balanced accuracy / AUC metric choices exactly
+  (see any existing classifier file's evaluate_grouped_cv function) --
+  don't introduce a different metric set.
+- Follow the no-day-number-prefix file naming convention already
+  established in this repo (see CLAUDE.md).
+- Row/column-level (character accuracy, ITR) is NOT available for these
+  two datasets via the current data loading path -- see CLAUDE.md's
+  "known gotchas" section and character_decoder.py's docstring. Do not
+  attempt to add character-level metrics to this table; flash-level
+  accuracy/AUC/balanced-accuracy only.
+- Read CLAUDE.md first for full project context before writing any code.

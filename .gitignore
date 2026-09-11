@@ -2,8 +2,13 @@
 mne_data/
 
 # Generated EDA outputs -- regenerable, not source
-eda_outputs/
-eda_outputs_*/
+results/eda_outputs/
+results/eda_outputs_*/
+results/route_a/
+
+# Recorded EEG sessions -- real subject data, not source
+collection/recordings/
+collection/thai_speller_logs/
 
 # Python
 __pycache__/

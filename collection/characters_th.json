@@ -1,0 +1,13 @@
+{
+  "source": "User-supplied mid-conversation, attributed to th_offline_cb.py / self.all_poss_letters in github.com/chaklam-silpasuwanchai/EEG-Real-Time-Applications (Thai-P300-Speller). NOT independently fetched/verified against the actual source file in this session.",
+  "verified": false,
+  "verification_todo": "Confirm this exact 72-item order against th_offline_cb.py directly before using it for real data collection -- this project's own design doc (Sec. 0) documents a prior incident where AI-claimed 'verified' citations were fabricated. Treat this list the same way: check the source file yourself, don't trust the '_source' label alone.",
+  "characters": [
+    "ก", "ข", "ฃ", "ค", "ฅ", "ฆ", "ง", "จ", "ฉ", "ช", "ซ", "ฌ", "ญ",
+    "ฎ", "ฏ", "ฐ", "ฑ", "ฒ", "ณ", "ด", "ต", "ถ", "ท", "ธ", "น", "บ", "ป",
+    "ผ", "ฝ", "พ", "ฟ", "ภ", "ม", "ย", "ร", "ล", "ว", "ศ", "ษ", "ส", "ห", "ฬ", "อ", "ฮ",
+    "ะ", "า", "ิ", "ี", "ึ", "ื", "ุ", "ู", "เ", "แ", "โ", "ำ", "ไ", "ใ", "ๆ",
+    "่", "้", "๊", "๋", "์",
+    "0", "1", "2", "3", "4", "5", "6", "7"
+  ]
+}
