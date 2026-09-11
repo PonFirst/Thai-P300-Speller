@@ -17,7 +17,7 @@ The code is the source of truth. This page says where each contract lives, what 
 | Stream | type | Format | Producer |
 |---|---|---|---|
 | `UnicornEEG` | `EEG` | 8 ch (`Fz F3 C4 Cz Pz P3 O2 O1`), 250 Hz, float32, **µV** | Unicorn LSL Interface (VM/Linux), or `collection/mock_headset.py` (`MockUnicornEEG`) |
-| `P300Markers` | `Markers` | 1 ch string, irregular, one JSON event per sample, timestamped at `win.flip()` | `checkerboard_stimulus.py` |
+| `P300Markers` | `Markers` | 1 ch string, irregular, one JSON event per sample | `checkerboard_stimulus.py` (stamped at `win.flip()`), or the in-window board `collection/board_qt.py` (stamped at the repaint request; see Stimulus boards) |
 | `P300Inference` | `P300Inference` | 1 ch string, irregular, one JSON event per sample | `pipeline/inference_service.py` |
 
 `P300Inference` is deliberately **not** type `Markers`. The recorder and the service find the stimulus stream by type `Markers`, and would latch onto the wrong stream if the two shared a type.
@@ -157,13 +157,24 @@ The policy is `pipeline/quality.gate_epoch()`; the default is `skip`.
 - **Yellow** never drops a flash.
 - **`warn`:** accepts everything and emits one `service_status` warning per trial naming the bad channels.
 
+## Stimulus boards
+
+The panel's **Board** setting chooses what draws the flashes. Both publish the same `P300Markers` JSON with the same trial structure (`collection/board_schedule.py` mirrors `checkerboard_stimulus.run_trial()`), and both wait for marker consumers before the first trial.
+
+| Board | Marker timestamp | Use for |
+|---|---|---|
+| In this window (default) | `local_clock()` right after the repaint request. Measured on this Mac: flash-to-flash 123.97 ms median for a planned 124 ms (sd 1.1 ms), stamps within 7 ms of plan. Lag to the screen unmeasured, expected up to 1–2 refreshes | demos, experimenting |
+| Separate window (precise timing) | PsychoPy's `win.flip()` time | real data, until the in-window board passes the photodiode check (TESTING.md H7) |
+
+Qt on macOS offers no presentation timestamp. Neither `QOpenGLWidget.frameSwapped` nor timer-driven repaints are locked to the display refresh (measured median intervals 4–4.5 ms on a 120 Hz screen), and `repaint()` usually returns before the paint happens (0.02 ms median).
+
 ## Session start order
 
 `collection/gui_logic.SessionOrchestrator`, driven by the Qt panel's 100 ms refresh:
 
 1. **Inference service** (only when Live inference is ticked). Wait for a `ready` whose fingerprint matches the panel's manifest; 20 s timeout.
 2. **Recorder.** Wait until `<csv>.log.jsonl` contains an `"event": "recording_started"` record, meaning EEG is being written; 35 s backstop. The recorder itself exits 3 after 30 s without EEG.
-3. **Stimulus.**
+3. **Stimulus board**: drawn in the panel, or the PsychoPy process (see Stimulus boards).
 
 Waiting for `recording_started` guarantees that no EEG is missing when flashing starts. The stimulus then waits for its marker consumers before the first trial, so the first `trial_start` isn't lost either (see Late subscribers).
 

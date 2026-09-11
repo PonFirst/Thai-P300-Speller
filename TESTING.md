@@ -21,6 +21,7 @@ Per component:
 "$PY" -m pytest tests/test_classifier_io.py tests/test_language_model.py tests/test_fit_from_recording.py tests/test_inference_service.py
 QT_QPA_PLATFORM=offscreen "$PY" -m pytest tests/test_gui_logic.py tests/test_gui_qt_smoke.py              # GUI
 "$PY" -m pytest tests/test_stimulus_consumer_wait.py                                                      # stimulus
+QT_QPA_PLATFORM=offscreen "$PY" -m pytest tests/test_board_schedule.py tests/test_board_qt.py               # in-window board
 QT_QPA_PLATFORM=offscreen "$PY" -m pytest tests/test_fault_injection.py                                   # cross-component
 ```
 
@@ -184,6 +185,7 @@ Thresholds are unchanged: green 1–200 µV peak-to-peak, yellow 200–400 µV, 
 |---|---|
 | An unimplemented stopping controller fails loudly, at the exact call, naming the method | `test_inference_service.py::test_update_not_implemented_fails_loudly_at_that_call`, `::test_real_controller_stub_names_reset`, `::test_runner_exits_4_when_reset_is_a_stub`; `test_fault_injection.py::test_unimplemented_controller_stops_service_with_exit_4_naming_the_method`; `test_gui_logic.py::test_service_exit_4_before_ready_aborts_with_method_name`; `test_gui_qt_smoke.py::test_service_not_implemented_exit_is_explained` |
 | The stimulus holds its first trial until marker consumers have subscribed | `test_stimulus_consumer_wait.py`; `tools/e2e_demo_smoke.sh` (the integrity summary shows no trials without `trial_start`) |
+| The in-window board plays the PsychoPy stimulus's trial structure and marker JSON on schedule, and waits for consumers | `test_board_schedule.py`; `test_board_qt.py` (including a real LSL consumer); `test_gui_logic.py::test_in_window_board_runs_instead_of_a_stimulus_process`; `test_gui_qt_smoke.py::test_in_window_board_replaces_the_traces_and_publishes_markers` |
 | The stimulus starts only once the recorder is writing EEG | `test_gui_logic.py::test_calibration_start_without_manifest`, `::test_recorder_that_never_starts_recording_times_out`, `::test_recorder_started_reads_the_recorders_structured_log`; `test_fault_injection.py::test_real_recorder_dropout_is_honoured_by_the_fit_loader` (the GUI's readiness check against the real recorder's log) |
 | Markers attach to the right sample and are never silently lost | `test_record_session.py::test_normal_operation_attaches_markers_to_nearest_sample_including_late_one`, `::test_late_and_colliding_markers_written_as_own_rows`, `::test_duplicate_redelivered_and_orphan_flash_markers`, `::test_marker_outlet_replaced_reconnects_and_resets_tracking`, `::test_sigterm_flushes_held_rows_and_writes_summary` |
 | Timestamps are recorded as delivered; one dejitter switch for recorder and service | `test_record_session.py::test_non_monotonic_timestamps_flagged_not_reordered_or_dropped`, `::test_inlet_processing_flags_follow_shared_dejitter_switch`; `test_inference_service.py::test_eeg_inlet_flags_follow_the_dejitter_constant`; `test_mock_headset_timing.py` |
@@ -245,10 +247,11 @@ EOF
    - Defaults are subject_001, 5, 62, 62, 0, Windowed off.
    - Session IDs `demo`, `demo_x` and `a b` are refused with a red message.
    - Target `กA` gives "Not in the 72-character matrix: A". (V)
-8. **Calibration run.** Run `./start_speller.sh --demo`, type `กข`, set Repetitions to 1, tick Windowed, press Enter.
+8. **Calibration run.** Run `./start_speller.sh --demo`, type `กข`, set Repetitions to 1, press Enter.
    - The recorder launches, and `collection/recordings/demo_subject_001_<stamp>.csv` appears.
-   - The stimulus opens only after the recorder has logged `recording_started`, and waits about 2 s before its first cue.
-   - When the stimulus finishes: "Stimulus finished — stopping recorder."
+   - With Board = "In this window" (the default), the board replaces the traces only after the recorder has logged `recording_started`, and waits about 2 s before its first cue.
+   - With Board = "Separate window (precise timing)", the PsychoPy window opens instead, and Screen and Windowed apply.
+   - When it finishes: "Stimulus finished — stopping recorder.", and the traces come back.
 9. **Stop and close.** Click Stop mid-session: "Stopped." Separately, close the window mid-session. Either way, `pgrep -fl "record_session|checkerboard_stimulus|inference_service"` returns nothing within 3 s.
 10. **Live display.** Run `./start_speller.sh --demo --manifest /tmp/p300qa/session_manifest.json`, then `$PY tools/fake_inference_publisher.py --manifest /tmp/p300qa/session_manifest.json --include-malformed`.
     - The service shows "ready".
@@ -288,6 +291,8 @@ None of these can run on this Mac without the device. Do them before the first r
   - **Record whether the LSL Interface keeps the same `source_id` after reconnecting.** Automatic recovery depends on it; if it changes, the recorder and service won't reattach on their own.
 - **H6. Electrode contact.** Lift one electrode mid-session: its dot turns red within about 200 ms, and with Live inference on, the quality-gate rejection counter rises. A blink turns frontal dots yellow at most, and no flash is rejected for it.
 - **H7. Stimulus timing.** Put a photodiode on a flashing cell and record it alongside the markers. Measure the lag between marker timestamps and actual screen onset, and its jitter, at the display's real refresh rate.
+  - Do it for both boards. The in-window board stamps a marker when it requests the repaint; on this Mac its flashes stayed within 7 ms of schedule, but its lag to the screen is unmeasured (expected up to about 17 ms at 120 Hz).
+  - Use Board = "Separate window (precise timing)" for real data until the in-window board passes.
 - **H8. Stimulus Thai rendering.** `THSarabunNew.ttf` isn't in the repo, so the PsychoPy stimulus falls back to a default font. Run `verify_thai_font_rendering()` and check the tone marks by eye. The GUI's Thai rendering is covered by the automated test; the stimulus's is not.
 - **H9. First-trial label.** After a real session, `trials_without_trial_start` in the integrity summary should be 0. A non-zero count means no consumer subscribed within the stimulus's 15 s + 2 s wait; check the recorder log for when the marker stream connected.
 - **H10. Live inference end to end** (once `reset`/`llr`/`update` are implemented): record a calibration session, then run `pipeline.fit_from_recording`. Then do a live session with Live inference on, and compare the composed text with the cued targets.
@@ -295,6 +300,7 @@ None of these can run on this Mac without the device. Do them before the first r
 
 ## Known limitations (not done this round)
 
+- **In-window board timing.** Its marker timestamps are estimates (see H7); record real data with the separate PsychoPy window until it has been checked.
 - **Open-loop stimulus.** It runs a fixed number of repetitions, so dynamic stopping is decided and displayed but the subject still sits through the whole trial.
 - **Manifest vs mode.** An explicit `--manifest` isn't checked against demo or real mode.
 - **Real-device behaviour is unverified.** Timestamp behaviour, channel labels and reconnect `source_id` (H2, H4, H5) are all unknown until tested on the headset.

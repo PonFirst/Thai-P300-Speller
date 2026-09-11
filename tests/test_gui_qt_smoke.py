@@ -12,7 +12,9 @@ import os
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"   # before any PySide6 import
 
+import json  # noqa: E402
 import sys  # noqa: E402
+import time  # noqa: E402
 import threading  # noqa: E402
 from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -89,6 +91,17 @@ class FakeProc:
         return list(self.lines)
 
 
+class FakeMarkerOutlet:
+    def __init__(self):
+        self.samples = []
+
+    def have_consumers(self):
+        return True
+
+    def push_sample(self, sample, timestamp):
+        self.samples.append((json.loads(sample[0]), timestamp))
+
+
 class Rig:
     def __init__(self, tmp_path, *, manifest=True, demo=False):
         self.clock = FakeClock()
@@ -99,10 +112,13 @@ class Rig:
             manifest_file.write_text("{}", encoding="utf-8")
         fake_manifest = SimpleNamespace(fingerprint=FP, path=manifest_file,
                                         characters_path=gl.CHARACTERS_PATH)
+        self.board_outlet = FakeMarkerOutlet()
         self.window = sgq.SessionWindow(
             demo=demo, manifest_path=manifest_file, manifest_loader=lambda _p: fake_manifest,
             launcher=self.launch, clock=self.clock, now=lambda: NOW,
-            recordings_dir=tmp_path / "recordings", start_readers=False, auto_refresh=False)
+            recordings_dir=tmp_path / "recordings", start_readers=False, auto_refresh=False,
+            board_outlet_factory=lambda: self.board_outlet, board_run_options={"consumer_settle_s": 0.0},
+            board_schedule_options={"cue_ms": 20, "inter_selection_ms": 20})
         self.window.resize(1200, 900)
         self.window.show()
         pump()
@@ -319,6 +335,7 @@ def test_enter_launches_inference_then_recorder_then_stimulus_and_stop_terminate
     rig.connect_eeg()
     assert w.live_check.isEnabled()
     w.live_check.setChecked(True)
+    w.board_combo.setCurrentIndex(w.board_combo.findData(sgq.BOARD_SEPARATE))
     w.windowed_check.setChecked(True)
     w.reps_spin.setValue(3)
     w.targets_edit.setText("กข")
@@ -428,6 +445,7 @@ def test_invalid_settings_block_start(rig):
 def test_closing_the_window_stops_every_process(app, tmp_path):
     r = Rig(tmp_path)
     r.connect_eeg()
+    r.window.board_combo.setCurrentIndex(r.window.board_combo.findData(sgq.BOARD_SEPARATE))
     r.window.targets_edit.setText("ก")
     r.window._on_start()
     out = Path(r.launched["recorder"].cmd[-1])
@@ -438,6 +456,40 @@ def test_closing_the_window_stops_every_process(app, tmp_path):
     assert set(r.launched) == {"recorder", "stimulus"}
     r.close()
     assert r.launched["recorder"].terminated and r.launched["stimulus"].terminated
+
+
+def test_in_window_board_replaces_the_traces_and_publishes_markers(app, tmp_path):
+    r = Rig(tmp_path)
+    try:
+        w = r.window
+        assert w.board_mode() == sgq.BOARD_IN_PANEL
+        assert not w.screen_spin.isEnabled() and not w.windowed_check.isEnabled()
+        r.connect_eeg()
+        w.reps_spin.setValue(1)
+        w.flash_spin.setValue(10)
+        w.isi_spin.setValue(10)
+        w.targets_edit.setText("ก")
+        w._on_start()
+        out = Path(r.launched["recorder"].cmd[-1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        Path(str(out) + ".log.jsonl").write_text('{"event": "recording_started"}\n', encoding="utf-8")
+        w.refresh()
+        assert "stimulus" not in r.launched
+        assert w.board_view.isVisible() and not w.trace_view.isVisible()
+        run = w.board_run
+        assert run is not None and run.poll() is None
+        deadline = time.monotonic() + 15
+        while run.poll() is None and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.002)
+        assert run.poll() == 0
+        events = [m["event"] for m, _ in r.board_outlet.samples]
+        assert events[0] == "trial_start" and events[-1] == "trial_end" and events.count("flash") == 24
+        w.refresh()
+        assert not w.board_view.isVisible() and w.trace_view.isVisible()
+        assert r.launched["recorder"].terminated
+    finally:
+        r.close()
 
 
 def test_calibration_without_manifest_and_demo_mode(app, tmp_path):

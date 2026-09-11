@@ -871,6 +871,28 @@ def test_recorder_that_never_starts_recording_times_out():
     assert level == gl.ERROR and "did not report that recording started" in message
 
 
+def test_in_window_board_runs_instead_of_a_stimulus_process():
+    h = Harness()
+    runs = []
+
+    def runner(settings):
+        runs.append(settings)
+        return FakeProc("stimulus", None, None)
+
+    h.orch.start(SETTINGS, OUT, stimulus_runner=runner)
+    h.orch.tick()
+    assert runs == [SETTINGS] and h.order == ["recorder"]
+    h.orch.procs["stimulus"].exit(0)
+    h.orch.tick()
+    assert h.launched["recorder"].terminated
+    assert h.last == (gl.INFO, "Stimulus finished — stopping recorder.")
+
+    h.orch.tick()
+    h.orch.start(SETTINGS, OUT)          # the runner belongs to one session only
+    h.orch.tick()
+    assert h.order == ["recorder", "recorder", "stimulus"] and runs == [SETTINGS]
+
+
 def test_calibration_start_without_manifest():
     h = Harness(recorder_started=False)
     assert h.orch.start(SETTINGS, OUT, manifest_path=None)

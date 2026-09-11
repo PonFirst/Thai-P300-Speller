@@ -57,6 +57,8 @@ collection/
                                  confidence gauge; launches service -> recorder -> stimulus
   gui_logic.py                   all panel logic without Qt (tested): settings, paths, connection state,
                                  inference display model, SessionOrchestrator
+  board_qt.py, board_schedule.py in-window stimulus board (the panel's default) and its timeline;
+                                 same markers and trial structure as checkerboard_stimulus.py
   session_gui.py                 LEGACY Tkinter panel, kept as a fallback
   record_session.py              hardened LSL recorder (backoff, gap rows, integrity checks, JSON logs)
   checkerboard_stimulus.py       PsychoPy matrix, cue phase, JSON markers at flip time
@@ -131,6 +133,10 @@ QT_QPA_PLATFORM=offscreen $PY -m pytest tests/ -q
 15. **FgMDM and TS+RegLDA have identical AUC — expected.** pyriemann 0.12's FGDA runs the same shrinkage LDA on the same features.
 16. **Mock-data AUC is low (~0.6) by design** (a 6 µV P300 in ~9 µV single-epoch noise). It isn't a classifier result.
 17. **Stale references.** `character_decoder.py` is cited but doesn't exist; `setup.py` names `day2_moabb_setup.py`; `validate_offline.py` prints `theta_base`.
+18. **In-window board timing is estimated.**
+    - Qt on macOS has no presentation timestamp, so the board stamps markers when it requests a repaint.
+    - Measured: on schedule within 7 ms; the lag to the screen is unmeasured.
+    - Use Board = "Separate window (precise timing)" for real data until TESTING.md H7 passes.
 
 ## Results so far (flash-level, subjects 1–5, GroupKFold by subject)
 

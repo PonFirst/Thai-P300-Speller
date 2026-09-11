@@ -9,7 +9,8 @@ with the same behaviour, plus a live-inference display:
      pipeline.quality.channel_levels over the last 1 s; gray means unknown
      (no data, a gap, or a stream that stopped delivering).
   2. Target entry and settings. Enter or Start launches
-     [pipeline.inference_service ->] record_session.py -> checkerboard_stimulus.py.
+     [pipeline.inference_service ->] record_session.py -> the stimulus board, drawn
+     in this window (board_qt.py) or in a separate PsychoPy window (checkerboard_stimulus.py).
   3. Live inference (P300Inference stream): composed Thai text, a
      per-character confidence gauge, fallback commits marked, rejected-flash
      counters, service state, manifest-mismatch and malformed-event reports.
@@ -50,19 +51,23 @@ from PySide6.QtGui import (  # noqa: E402
     QColor, QFont, QFontDatabase, QImage, QPainter, QPen, QPolygonF, QTextLayout, QTextOption,
 )
 from PySide6.QtWidgets import (  # noqa: E402
-    QApplication, QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QPushButton, QSizePolicy, QSpinBox, QToolTip, QVBoxLayout, QWidget,
 )
 
+import board_qt as bq  # noqa: E402
+import board_schedule as bs  # noqa: E402
 import gui_logic as gl  # noqa: E402
 from pipeline.constants import (  # noqa: E402
-    EEG_STREAM_TYPE, INFERENCE_FINGERPRINT_KEY, INFERENCE_STREAM_TYPE,
+    EEG_STREAM_TYPE, INFERENCE_FINGERPRINT_KEY, INFERENCE_STREAM_TYPE, MARKER_STREAM_TYPE,
 )
 from pipeline.manifest import (  # noqa: E402
     ManifestError, load_characters_file, load_manifest, short_fingerprint,
 )
 
 QUEUED = Qt.ConnectionType.QueuedConnection
+BOARD_IN_PANEL = "panel"
+BOARD_SEPARATE = "window"
 
 
 # ----------------------------------------------------------------------
@@ -627,6 +632,8 @@ class SessionWindow(QMainWindow):
       launcher             SessionOrchestrator launcher (tests pass fakes)
       clock / now          monotonic seconds / wall-clock datetime
       auto_refresh=False   no QTimer (tests call refresh())
+      board_outlet_factory / board_run_options / board_schedule_options
+                           the in-window board's marker outlet, consumer wait and timeline
     manifest_path=None uses the mode's default at the repo root
     (demo_session_manifest.json in demo mode, session_manifest.json otherwise).
     Child processes always run with sys.executable, never a bare `python`.
@@ -637,9 +644,15 @@ class SessionWindow(QMainWindow):
                  clock=time.monotonic, now=datetime.now, recordings_dir=gl.RECORDINGS_DIR,
                  start_readers: bool = True, auto_refresh: bool = True,
                  eeg_type: str = EEG_STREAM_TYPE, inference_type: str = INFERENCE_STREAM_TYPE,
-                 orchestrator_options: dict | None = None):
+                 orchestrator_options: dict | None = None, marker_type: str = MARKER_STREAM_TYPE,
+                 board_outlet_factory=None, board_run_options: dict | None = None,
+                 board_schedule_options: dict | None = None):
         super().__init__()
         self.demo = demo
+        self.board_outlet_factory = board_outlet_factory or (lambda: bq.lsl_marker_outlet(marker_type))
+        self.board_run_options = dict(board_run_options or {})
+        self.board_schedule_options = dict(board_schedule_options or {})
+        self.board_run = None
         self._clock = clock
         self._now = now
         self.recordings_dir = recordings_dir
@@ -733,8 +746,11 @@ class SessionWindow(QMainWindow):
 
         plots = QHBoxLayout()
         self.trace_view = TraceView()
+        self.board_view = bq.BoardView(self.characters)
+        self.board_view.hide()
         self.scalp_map = ScalpMap()
         plots.addWidget(self.trace_view, 21)
+        plots.addWidget(self.board_view, 21)
         plots.addWidget(self.scalp_map, 10)
         root.addLayout(plots, 5)
 
@@ -825,12 +841,23 @@ class SessionWindow(QMainWindow):
         row2.addWidget(muted("ISI ms"))
         self.isi_spin = spin("isi_ms")
         row2.addWidget(self.isi_spin)
+        row2.addWidget(muted("Board"))
+        self.board_combo = QComboBox()
+        self.board_combo.addItem("In this window", BOARD_IN_PANEL)
+        self.board_combo.addItem("Separate window (precise timing)", BOARD_SEPARATE)
+        self.board_combo.setToolTip(
+            "In this window: flash times are estimated (about one screen refresh). Separate window: PsychoPy "
+            "stamps each flash at the real screen flip; use it for real data until the in-window board has "
+            "been checked with a photodiode.")
+        row2.addWidget(self.board_combo)
         row2.addWidget(muted("Screen"))
         self.screen_spin = spin("screen")
         row2.addWidget(self.screen_spin)
         self.windowed_check = QCheckBox("Windowed")
         self.windowed_check.setChecked(defaults["windowed"])
         row2.addWidget(self.windowed_check)
+        self.board_combo.currentIndexChanged.connect(self._on_board_mode_changed)
+        self._on_board_mode_changed()
         self.live_check = QCheckBox("Live inference")
         self.live_check.setChecked(False)
         self.live_check.setEnabled(self.manifest is not None)
@@ -892,7 +919,33 @@ class SessionWindow(QMainWindow):
             self.trace_view.set_traces(gl.display_traces(self.buffer))
         self.scalp_map.set_levels(gl.scalp_levels(self.buffer, connected))
         self.orchestrator.tick(service_ready=self.inference_model.service_ready)
+        if self.board_run is not None and self.board_run.poll() is not None:
+            self.board_run = None
+            self._show_board(False)
         self._render_status()
+
+    def board_mode(self) -> str:
+        return self.board_combo.currentData()
+
+    def _on_board_mode_changed(self, *_):
+        separate = self.board_mode() == BOARD_SEPARATE
+        self.screen_spin.setEnabled(separate)
+        self.windowed_check.setEnabled(separate)
+
+    def _show_board(self, visible: bool):
+        self.trace_view.setVisible(not visible)
+        self.board_view.setVisible(visible)
+
+    def _start_board(self, settings):
+        schedule = bs.build_session_schedule(
+            self.characters, settings.targets, n_repetitions=settings.repetitions,
+            flash_ms=settings.flash_ms, isi_ms=settings.isi_ms, **self.board_schedule_options)
+        run = bq.EmbeddedBoardRun(self.board_view, schedule, self.board_outlet_factory(),
+                                  **self.board_run_options)
+        run.notice.connect(lambda text: self._on_session_message(text, gl.INFO))
+        self.board_run = run
+        self._show_board(True)
+        return run.start()
 
     def _render_status(self):
         self.status_label.setText(self.connection.status_text)
@@ -972,8 +1025,10 @@ class SessionWindow(QMainWindow):
                                      recordings_dir=self.recordings_dir)
         self.inference_model.reset_session()
         self._render_inference()
+        runner = self._start_board if self.board_mode() == BOARD_IN_PANEL else None
         self.orchestrator.start(settings, out_path,
-                                manifest_path=self.manifest.path if use_inference else None)
+                                manifest_path=self.manifest.path if use_inference else None,
+                                stimulus_runner=runner)
         self._render_status()
 
     def _on_stop(self):

@@ -857,17 +857,20 @@ class SessionOrchestrator:
         self._phase_started = 0.0
         self.settings: SessionSettings | None = None
         self.out_path: Path | None = None
+        self.stimulus_runner = None
 
     @property
     def active(self) -> bool:
         """True while any part of a session is starting, running, or still shutting down."""
         return self.phase != IDLE or bool(self._stopping)
 
-    def start(self, settings: SessionSettings, out_path, manifest_path=None) -> bool:
+    def start(self, settings: SessionSettings, out_path, manifest_path=None, stimulus_runner=None) -> bool:
+        """stimulus_runner(settings) -> handle runs the board in-process instead of launching the stimulus."""
         if self.active:
             return False
         self.settings = settings
         self.out_path = Path(out_path)
+        self.stimulus_runner = stimulus_runner
         if manifest_path is not None:
             self._launch("service", service_command(self.python, manifest_path, self.service_extra_args),
                          self.repo_root)
@@ -904,7 +907,10 @@ class SessionOrchestrator:
                 lines = self._take("recorder").stderr_lines()
                 self._abort(describe_recorder_exit(code, lines) + " Session not started.")
             elif self.recorder_ready(self.out_path):
-                self._launch("stimulus", stimulus_command(self.python, self.settings), self.collection_dir)
+                if self.stimulus_runner is not None:
+                    self.procs["stimulus"] = self.stimulus_runner(self.settings)
+                else:
+                    self._launch("stimulus", stimulus_command(self.python, self.settings), self.collection_dir)
                 self._enter(RUNNING)
                 n = len(self.settings.targets)
                 self.notify(f"Running — {n} trial{'s' if n != 1 else ''} → {self.out_path}", INFO)
