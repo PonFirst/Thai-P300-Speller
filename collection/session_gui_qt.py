@@ -52,7 +52,8 @@ from PySide6.QtGui import (  # noqa: E402
 )
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QPushButton, QSizePolicy, QSpinBox, QToolTip, QVBoxLayout, QWidget,
+    QListWidgetItem, QMainWindow, QPushButton, QSizePolicy, QSpinBox, QStackedWidget, QToolTip, QVBoxLayout,
+    QWidget,
 )
 
 import board_qt as bq  # noqa: E402
@@ -713,11 +714,13 @@ class SessionWindow(QMainWindow):
 
     # -- layout --------------------------------------------------------------
     def _build_ui(self):
-        central = QWidget()
-        central.setObjectName("central")
-        central.setStyleSheet(f"#central {{ background: {gl.COLOR_BG}; }} QLabel {{ color: {gl.COLOR_FG}; }}")
-        self.setCentralWidget(central)
-        root = QVBoxLayout(central)
+        self.pages = QStackedWidget()
+        self.setCentralWidget(self.pages)
+
+        setup_page = QWidget()
+        setup_page.setObjectName("central")
+        setup_page.setStyleSheet(f"#central {{ background: {gl.COLOR_BG}; }} QLabel {{ color: {gl.COLOR_FG}; }}")
+        root = QVBoxLayout(setup_page)
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(8)
 
@@ -746,11 +749,8 @@ class SessionWindow(QMainWindow):
 
         plots = QHBoxLayout()
         self.trace_view = TraceView()
-        self.board_view = bq.BoardView(self.characters)
-        self.board_view.hide()
         self.scalp_map = ScalpMap()
         plots.addWidget(self.trace_view, 21)
-        plots.addWidget(self.board_view, 21)
         plots.addWidget(self.scalp_map, 10)
         root.addLayout(plots, 5)
 
@@ -884,6 +884,55 @@ class SessionWindow(QMainWindow):
         root.addWidget(self.session_label)
         self.targets_edit.setFocus()
 
+        self.pages.addWidget(setup_page)
+        self.pages.addWidget(self._build_run_page())
+        self.pages.setCurrentWidget(setup_page)
+
+    def _build_run_page(self) -> QWidget:
+        """
+        Distraction-free calibration screen: just the board (no traces, scalp
+        map, live-inference panel, or settings), matching the reference
+        vendor speller UI. Shown full-window while an in-window board session
+        runs; a minimal overlay bar keeps only Stop and status visible.
+        """
+        page = QWidget()
+        page.setStyleSheet("background:#000000;")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        overlay = QHBoxLayout()
+        overlay.setContentsMargins(10, 6, 10, 6)
+        self.run_demo_tag = QLabel("DEMO")
+        self.run_demo_tag.setStyleSheet("color:#fbbf24; font-weight:bold; font-size:11px;")
+        self.run_demo_tag.setVisible(self.demo)
+        overlay.addWidget(self.run_demo_tag)
+        self.run_status_label = QLabel("Idle")
+        self.run_status_label.setStyleSheet(f"color:{gl.COLOR_MUTED}; font-size:12px;")
+        self.run_status_label.setWordWrap(True)
+        overlay.addWidget(self.run_status_label, 1)
+        run_stop_button = QPushButton("Stop")
+        run_stop_button.setStyleSheet(
+            "QPushButton { background:#1f2937; color:#e5e7eb; padding:4px 14px; border-radius:4px; "
+            "border:1px solid #374151; } QPushButton:hover { background:#374151; }")
+        run_stop_button.clicked.connect(self._on_stop)
+        overlay.addWidget(run_stop_button)
+        layout.addLayout(overlay)
+
+        self.board_view = bq.BoardView(self.characters)
+        layout.addWidget(self.board_view, 1)
+        return page
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self.pages.currentWidget() is self.run_page:
+            self._on_stop()
+            return
+        super().keyPressEvent(event)
+
+    @property
+    def run_page(self) -> QWidget:
+        return self.pages.widget(1)
+
     # -- slots fed by the LSL threads (and by tests) ---------------------------
     def on_eeg_stream_found(self, name: str = ""):
         self.buffer.clear()
@@ -921,7 +970,7 @@ class SessionWindow(QMainWindow):
         self.orchestrator.tick(service_ready=self.inference_model.service_ready)
         if self.board_run is not None and self.board_run.poll() is not None:
             self.board_run = None
-            self._show_board(False)
+            self._exit_run_view()
         self._render_status()
 
     def board_mode(self) -> str:
@@ -932,9 +981,12 @@ class SessionWindow(QMainWindow):
         self.screen_spin.setEnabled(separate)
         self.windowed_check.setEnabled(separate)
 
-    def _show_board(self, visible: bool):
-        self.trace_view.setVisible(not visible)
-        self.board_view.setVisible(visible)
+    def _enter_run_view(self):
+        """Switch to the distraction-free board page (QStackedWidget hides everything else)."""
+        self.pages.setCurrentWidget(self.run_page)
+
+    def _exit_run_view(self):
+        self.pages.setCurrentWidget(self.pages.widget(0))
 
     def _start_board(self, settings):
         schedule = bs.build_session_schedule(
@@ -944,7 +996,7 @@ class SessionWindow(QMainWindow):
                                   **self.board_run_options)
         run.notice.connect(lambda text: self._on_session_message(text, gl.INFO))
         self.board_run = run
-        self._show_board(True)
+        self._enter_run_view()
         return run.start()
 
     def _render_status(self):
@@ -996,6 +1048,9 @@ class SessionWindow(QMainWindow):
         color = gl.COLOR_ERROR if level == gl.ERROR else gl.COLOR_MUTED
         self.session_label.setText(message)
         self.session_label.setStyleSheet(f"color:{color};")
+        if hasattr(self, "run_status_label"):
+            self.run_status_label.setText(message)
+            self.run_status_label.setStyleSheet(f"color:{color}; font-size:12px;")
         print(f"[session_gui_qt] {message}")
         if hasattr(self, "start_button"):
             self._render_status()
