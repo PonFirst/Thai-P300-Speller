@@ -5,13 +5,12 @@ Does NOT talk to the Unicorn Hybrid Black directly -- no BrainFlow, no
 Unicorn SDK calls. BrainFlow's UnicornBoard class is compiled out on
 macOS entirely (unicorn_board.h is wrapped in
 `#if defined __linux__ || defined _WIN32`), and g.tec's own Unicorn
-Suite / Unicorn LSL Interface is Windows-only, so on this project's
-Apple Silicon development machine the only viable path is: run g.tec's
-official Unicorn LSL Interface on a Windows-on-ARM VM (Parallels, with
-the Unicorn's USB dongle passed through) or on Linux, which publishes an
-LSL outlet, and have this script pull from that outlet over the network/
-loopback. This script is a pure LSL consumer -- see README_ACQUISITION.md
-for the full machine topology and startup order.
+Suite / Unicorn LSL Interface is Windows-only. Deployment runs this
+script on the same Windows machine as the Unicorn LSL Interface, pulling
+its EEG outlet over LSL loopback; this script is a pure LSL consumer
+either way (an older split-machine setup, pulling over the network
+instead, still works unchanged) -- see README_ACQUISITION.md for the
+full machine topology and startup order.
 
 Consumes two LSL streams per the shared interface contract (resolved by
 TYPE, configurable with --eeg-type / --marker-type):
@@ -23,8 +22,9 @@ TYPE, configurable with --eeg-type / --marker-type):
                  collection/checkerboard_stimulus.py for the producer).
 
 Writes one CSV per session with columns:
-  timestamp, Fz, F3, C4, Cz, Pz, P3, O2, O1, marker_json_or_empty,
+  timestamp, Fz, C3, Cz, C4, Pz, PO7, Oz, PO8, marker_json_or_empty,
   trial_id, flash_idx, group_json, is_target, target_char_idx
+(the 8 channel columns are pipeline.constants.EEG_CHANNELS, in order)
 
 Besides one row per EEG sample, three kinds of rows have all 8 channels
 NaN and are identified by `marker_json_or_empty`:
@@ -351,10 +351,10 @@ def inlet_processing_names(kind: str, clocksync: bool = True) -> list[str]:
     pylsl processing flags for an inlet, by pylsl attribute name.
 
     proc_clocksync maps sample timestamps into this machine's local_clock()
-    domain: without it EEG timestamps from the Windows VM / Linux box stay in
-    that machine's clock and nearest-sample merging against locally produced
-    markers is meaningless (for a local stream the correction is ~0).
-    --no-clocksync removes it (debugging only).
+    domain: on one machine the correction is ~0, but without it, an EEG
+    source with its own clock (a split-machine setup, or any future one)
+    would leave nearest-sample merging against locally produced markers
+    meaningless. --no-clocksync removes it (debugging only).
 
     proc_dejitter is decided once, for the recorder and the inference service
     together, by pipeline.constants.EEG_INLET_DEJITTER (EEG only). Off, the

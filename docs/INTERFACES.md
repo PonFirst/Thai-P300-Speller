@@ -16,7 +16,7 @@ The code is the source of truth. This page says where each contract lives, what 
 
 | Stream | type | Format | Producer |
 |---|---|---|---|
-| `UnicornEEG` | `EEG` | 8 ch (`Fz F3 C4 Cz Pz P3 O2 O1`), 250 Hz, float32, **µV** | Unicorn LSL Interface (VM/Linux), or `collection/mock_headset.py` (`MockUnicornEEG`) |
+| `UnicornEEG` | `EEG` | 8 ch (`Fz C3 Cz C4 Pz PO7 Oz PO8`, `pipeline.constants.EEG_CHANNELS`), 250 Hz, float32, **µV** | Unicorn LSL Interface, on the deployment machine (`collection/README_ACQUISITION.md`), or `collection/mock_headset.py` (`MockUnicornEEG`) |
 | `P300Markers` | `Markers` | 1 ch string, irregular, one JSON event per sample | `checkerboard_stimulus.py` (stamped at `win.flip()`), or the in-window board `collection/board_qt.py` (stamped at the repaint request; see Stimulus boards) |
 | `P300Inference` | `P300Inference` | 1 ch string, irregular, one JSON event per sample | `pipeline/inference_service.py` |
 
@@ -124,7 +124,7 @@ The real Unicorn LSL Interface's labels are unverified (see `TESTING.md`).
 
 ## Recorder CSV
 
-The columns are unchanged: `timestamp, Fz, F3, C4, Cz, Pz, P3, O2, O1, marker_json_or_empty, trial_id, flash_idx, group_json, is_target, target_char_idx`.
+The columns: `timestamp, Fz, C3, Cz, C4, Pz, PO7, Oz, PO8, marker_json_or_empty, trial_id, flash_idx, group_json, is_target, target_char_idx` (the 8 channel columns are `pipeline.constants.EEG_CHANNELS`).
 
 Besides one row per EEG sample, some rows have all 8 channels NaN:
 - gap rows (`stream_gap_start` / `stream_gap_end`);

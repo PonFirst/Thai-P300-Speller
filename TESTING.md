@@ -237,9 +237,9 @@ EOF
    - The status goes from red "● No EEG stream — start Unicorn LSL Interface" to green "● EEG connected".
    - The manifest note names `<repo>/demo_session_manifest.json`, or says it is missing with a `--allow-demo` hint. (V)
 2. **Real-mode default.** Run `$PY collection/session_gui_qt.py`. The note names `session_manifest.json`, never the demo manifest. (V)
-3. **Traces.** Top to bottom: F3, Fz, Cz, C4, P3, Pz, O1, O2, over a 0–4 s axis, all visible at a similar height. (V)
+3. **Traces.** Top to bottom: Fz, C3, Cz, C4, Pz, PO7, Oz, PO8, over a 0–4 s axis, all visible at a similar height. (V)
 4. **Scalp map.** Two lobed hemispheres with a centre gap, 8 labelled dots, and a 4-entry legend (Good / Noisy / Bad-flat / No data). (V)
-5. **Fault injection.** Run `$PY collection/mock_headset.py --flat P3 --noisy C4 --railed O1`, then `$PY collection/session_gui_qt.py`. P3 is red, C4 yellow, O1 red, and the rest green. (V for flat and noisy)
+5. **Fault injection.** Run `$PY collection/mock_headset.py --flat PO7 --noisy C4 --railed Oz`, then `$PY collection/session_gui_qt.py`. PO7 is red, C4 yellow, Oz red, and the rest green. (V for flat and noisy)
 6. **Stream lost.** Press Ctrl+C on the mock.
    - Within about 1 s: red "● EEG stream lost", Start disabled, all dots gray.
    - Restart the mock: the status returns to green and Start is enabled. (V)
@@ -269,24 +269,27 @@ EOF
     - At the first trial: red "Live inference stopped: BayesianStoppingController.reset() is not implemented yet … Recording continues."
 15. **Tk fallback.** With the mock running, `$PY collection/session_gui.py --demo` still opens the old panel.
 
-## Hardware-in-the-loop checks (Unicorn Hybrid Black, via the Windows VM or Linux LSL bridge)
+## Hardware-in-the-loop checks (Unicorn Hybrid Black)
 
-None of these can run on this Mac without the device. Do them before the first real data collection; each is a go/no-go.
+Run these on the deployment Windows machine, with the real headset. None of
+these can run on the Mac this repo is developed on, since it never touches
+the device. Do them before the first real data collection; each is a
+go/no-go.
 
-- **H1. Stream discovery and shape.** Start the Unicorn LSL Interface in the VM, then:
+- **H1. Stream discovery and shape.** Start the Unicorn LSL Interface, then:
   ```bash
   $PY -c "from pylsl import resolve_byprop as r; print([(s.name(), s.type(), s.channel_count(), s.nominal_srate()) for s in r('type','EEG',timeout=5)])"
   ```
   - **Go:** type `EEG`, 8 channels, 250 Hz.
-  - **Stop:** a different channel count (e.g. accelerometer, gyroscope, battery or counter channels included) breaks the 8-channel contract. If nothing resolves, check the VM's network mode, since LSL discovery uses UDP multicast.
-- **H2. Channel labels and montage.** Print the stream's channel labels (`info.desc().child("channels")`) and compare them with `EEG_CHANNELS` = Fz, F3, C4, Cz, Pz, P3, O2, O1, and with the physical electrode positions (CLAUDE.md gotcha 9).
+  - **Stop:** a different channel count (e.g. accelerometer, gyroscope, battery or counter channels included) breaks the 8-channel contract. If nothing resolves and you're running the split-machine variant (collection/README_ACQUISITION.md), check the VM's network mode, since LSL discovery uses UDP multicast.
+- **H2. Channel labels and montage.** Print the stream's channel labels (`info.desc().child("channels")`) and compare them with `EEG_CHANNELS` = Fz, C3, Cz, C4, Pz, PO7, Oz, PO8, and with the physical electrode positions (CLAUDE.md gotcha 9). This is the one check this list still hasn't had against a live stream -- the montage itself is verified against the vendor manual (CLAUDE.md hard constraints), but the real device's *reported* labels are not.
   - **Generic labels** (`EEG 1`…) make the service warn and fall back to channel count and rate.
   - **Different electrode names** make it refuse (exit 2) until the montage is confirmed.
 - **H3. Units.** Run `$PY collection/record_session.py --out /tmp/h3.csv` for 30 s. In `/tmp/h3.csv.integrity.json`, `sanity_check` shows every channel within 1–200 µV peak-to-peak. Values in the millions mean volts, not µV (gotcha 1).
 - **H4. Timestamp behaviour.** Record 2 minutes, then read the integrity summary: non-monotonic steps, `max_irregular_step_s`, `effective_rate_hz`.
   - **Go:** 0 non-monotonic steps, and a rate within ±2 % of 250 Hz.
   - **If there are non-monotonic steps:** set `EEG_INLET_DEJITTER = True` in `pipeline/constants.py` (measured safe across dropouts; see docs/INTERFACES.md), then re-run H4, the full test suite, and a fresh calibration fit.
-- **H5. Real dropout.** During a 1-minute recording, switch the headset off for about 5 s (also try walking out of Bluetooth range, and suspending the VM).
+- **H5. Real dropout.** During a 1-minute recording, switch the headset off for about 5 s (also try walking out of Bluetooth range).
   - **Expect:** the GUI shows "EEG stream lost" within 1 s and recovers; the CSV has gap start/end rows; the recorder exits 0 at the end.
   - **Record whether the LSL Interface keeps the same `source_id` after reconnecting.** Automatic recovery depends on it; if it changes, the recorder and service won't reattach on their own.
 - **H6. Electrode contact.** Lift one electrode mid-session: its dot turns red within about 200 ms, and with Live inference on, the quality-gate rejection counter rises. A blink turns frontal dots yellow at most, and no flash is rejected for it.

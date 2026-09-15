@@ -79,7 +79,7 @@ def test_channel_gain_is_centro_parietal():
     """Pz/Cz should dominate; frontal and occipital sites weaker."""
     assert CHANNEL_GAIN["Pz"] == max(CHANNEL_GAIN.values())
     assert CHANNEL_GAIN["Cz"] > CHANNEL_GAIN["Fz"]
-    assert CHANNEL_GAIN["Pz"] > CHANNEL_GAIN["O1"]
+    assert CHANNEL_GAIN["Pz"] > CHANNEL_GAIN["Oz"]
     assert set(CHANNEL_GAIN) == set(EEG_CHANNELS)
 
 
@@ -166,7 +166,7 @@ def test_bad_channel_simulation_lands_in_intended_quality_bucket(bucket):
 def test_good_channels_stay_green_when_another_channel_is_faulty():
     """Simulating a fault on one electrode must not disturb the others."""
     for seed in range(5):
-        ptp = _simulate_channel("Pz", flat={"P3"}, noisy={"C4"}, railed=set(),
+        ptp = _simulate_channel("Pz", flat={"PO7"}, noisy={"C4"}, railed=set(),
                                  seed=seed)
         assert SANITY_PTP_MIN_UV < ptp < SANITY_PTP_MAX_UV, f"seed {seed}: {ptp}"
 
@@ -187,7 +187,7 @@ def test_railed_beats_noisy_when_channel_listed_in_both():
 
 def test_interference_is_zero_for_healthy_channel():
     t = np.arange(500) / 250.0
-    assert np.all(interference_uv(t, "Pz", set(), {"C4"}, {"O1"}) == 0.0)
+    assert np.all(interference_uv(t, "Pz", set(), {"C4"}, {"PO7"}) == 0.0)
 
 
 def test_good_channel_scale_is_unmodified():

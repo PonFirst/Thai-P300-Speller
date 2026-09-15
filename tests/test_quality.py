@@ -116,10 +116,10 @@ def test_yellow_channel_never_rejects():
 
 def test_unknown_quality_rejects():
     epoch = _epoch([50.0] * 8)
-    epoch[EEG_CHANNELS.index("O1"), 10] = np.nan
+    epoch[EEG_CHANNELS.index("PO7"), 10] = np.nan
     decision = gate_epoch(epoch, EEG_CHANNELS)
     assert not decision.accept
-    assert decision.bad_channels == ("O1",)
+    assert decision.bad_channels == ("PO7",)
 
 
 def test_warn_policy_accepts_but_reports():

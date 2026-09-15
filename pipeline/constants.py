@@ -10,7 +10,19 @@ keep working.
 # Unicorn LSL channel index order. This is stream indexing, not display
 # order -- the GUI keeps its own front-to-back DISPLAY_ORDER. A list, not a
 # tuple, because existing code concatenates it with other lists.
-EEG_CHANNELS = ["Fz", "F3", "C4", "Cz", "Pz", "P3", "O2", "O1"]
+#
+# This is the Unicorn Hybrid Black's factory-default 8-channel cap, verified
+# against g.tec's own Unicorn Suite Hybrid Black user manual
+# (github.com/unicorn-bi/Unicorn-Suite-Hybrid-Black-User-Manual), and
+# cross-checked against a MathWorks third-party support-package listing and
+# multiple published papers using this exact headset. It replaces an earlier
+# assumption (Fz, F3, C4, Cz, Pz, P3, O2, O1) inherited from the Pananookooln
+# et al. reference paper's own EEG system, which was never actually the same
+# hardware and was never verified against this project's device -- see
+# CLAUDE.md's hard constraints for the correction record. Four of the eight
+# positions are genuinely different scalp locations, not just relabelled:
+# C3 vs. the old F3, PO7 vs. P3, Oz vs. O2, PO8 vs. O1.
+EEG_CHANNELS = ["Fz", "C3", "Cz", "C4", "Pz", "PO7", "Oz", "PO8"]
 EEG_SFREQ = 250.0
 N_CHARS = 72
 

@@ -28,7 +28,7 @@ from flash_sequence import CheckerboardConfig, build_flash_sequence  # noqa: E40
 SFREQ = 250.0
 SOA = 0.124
 T0 = 5000.0
-GAINS = np.array([0.45, 0.35, 0.70, 0.90, 1.00, 0.80, 0.40, 0.40])  # Fz F3 C4 Cz Pz P3 O2 O1
+GAINS = np.array([0.45, 0.65, 0.90, 0.70, 1.00, 0.55, 0.45, 0.55])  # Fz C3 Cz C4 Pz PO7 Oz PO8
 
 
 def make_recording(path, *, n_trials=5, n_reps=2, seed=0, p300_uv=8.0, noise_uv=5.0,

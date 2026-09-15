@@ -1,54 +1,68 @@
-# Acquisition setup: Unicorn Hybrid Black + macOS (Apple Silicon)
+# Acquisition setup: Unicorn Hybrid Black
 
-## Why this path, not BrainFlow
+## Why not BrainFlow
 
 Confirmed directly from primary sources (not relitigating this):
 
 - BrainFlow's `unicorn_board.h` wraps the entire Unicorn board class in
   `#if defined __linux__ || defined _WIN32` -- it does not compile on
   macOS at all, Intel or Apple Silicon. `pip install brainflow` will not
-  give you a working Unicorn path here.
+  give you a working Unicorn path on a Mac.
 - g.tec's own Unicorn Suite / Unicorn LSL Interface is Windows-only.
 
-So on this Apple Silicon development machine, the headset itself is
-never touched by code in this repo. The only two viable acquisition
-paths are:
-
-1. **Windows-on-ARM VM** (e.g. Parallels) running the official Unicorn
-   Suite, with the Unicorn's USB dongle passed through to the VM.
-2. **A separate Linux machine** running the official vendor stack.
-
-Either way, the *actual* Unicorn driver runs somewhere other than this
-Mac, and publishes an LSL outlet that this repo's scripts consume over
-the network (or loopback, if using a VM on the same physical machine).
-`collection/record_session.py` only ever talks LSL -- it has no
+So this repo's code never talks to the headset directly -- everything
+here is a pure LSL consumer. `collection/record_session.py` has no
 BrainFlow dependency and never imports a Unicorn SDK.
 
-## Machine topology
+## Machine topology: one Windows machine (primary, documented path)
+
+The headset driver, the Unicorn LSL Interface, and every process in
+this repo (`record_session.py`, `pipeline/inference_service.py`,
+`collection/session_gui_qt.py`, and the stimulus) run together on one
+Windows machine the project owner fully controls. Every LSL stream is
+still resolved **by type**, never by hostname, so nothing here cares
+that everything happens to be on one box:
 
 ```
-+----------------------------------+       LSL (network or VM loopback)
-| Windows-on-ARM VM (or Linux box) | -------------------------------+
-|  - Unicorn USB dongle attached   |                                |
-|  - Unicorn LSL Interface app     |                                |
-|    -> publishes 'UnicornEEG'     |                                |
-|       LSL outlet (8ch, 250Hz)    |                                v
-+----------------------------------+                    +----------------------+
-                                                          | macOS (this machine)|
-+----------------------------------+   LSL (localhost)   |                      |
-| checkerboard_stimulus.py         | -------------------> | record_session.py   |
-|  -> publishes 'P300Markers'      |                      | (resolves BOTH      |
-|     LSL outlet (JSON strings)    |                      |  outlets, merges,   |
-+----------------------------------+                      |  writes one CSV)    |
-                                                           +----------------------+
++--------------------------------------------------------------+
+| One Windows machine                                          |
+|                                                                |
+|  Unicorn headset (USB) -> Unicorn LSL Interface               |
+|                             -> publishes 'UnicornEEG'          |
+|                                LSL outlet (8ch, 250Hz)          |
+|                                      |                          |
+|                                      v  LSL (localhost)         |
+|  checkerboard_stimulus.py  -----> record_session.py            |
+|   -> publishes 'P300Markers'        (resolves BOTH outlets,    |
+|      LSL outlet (JSON strings)       merges, writes one CSV)   |
+|                                                                |
+|  collection/session_gui_qt.py drives all of the above          |
+|  pipeline/inference_service.py (optional, live inference)      |
++--------------------------------------------------------------+
 ```
+
+This development repo itself is edited on a separate Apple Silicon
+Mac (BrainFlow/Unicorn Suite don't run there at all -- see above), but
+that machine is not part of the acquisition topology; it never runs a
+real session.
+
+### Split-machine variant (still works, no longer primary)
+
+An earlier setup ran the headset driver on a separate Windows-on-ARM
+VM or Linux box, with the rest of the pipeline on another machine,
+connected over the network instead of localhost. Nothing in this repo
+assumes one machine over the other -- LSL discovery works the same way
+either way -- so that split still works if ever needed. The one
+practical difference: LSL discovery defaults to UDP multicast, which
+can silently fail across virtual network segments; on one machine that
+concern doesn't arise.
 
 ## Startup sequence -- order matters
 
-1. **Start the Unicorn LSL Interface** on the Windows VM / Linux box.
-   Connect to the headset, click Start streaming. Confirm in that app
-   that it is actively streaming before moving on.
-2. **Start `collection/record_session.py`** on this Mac. It resolves the
+1. **Start the Unicorn LSL Interface.** Connect to the headset, click
+   Start streaming. Confirm in that app that it is actively streaming
+   before moving on.
+2. **Start `collection/record_session.py`.** It resolves the
    EEG stream by type (`--eeg-type`, default `EEG`) with exponential
    backoff: retries after 0.5 s, 1 s, 2 s, 4 s, then every 5 s, logging
    each attempt with the elapsed time and the limit. If no EEG stream
@@ -89,23 +103,27 @@ of discarding the new run's flashes.
 
 ## Running it
 
-On the Windows VM / Linux box: start the Unicorn LSL Interface and click
-Start.
-
-On this Mac, the normal path is the session panel. It starts the recorder,
-waits until the recorder's log reports `recording_started`, and only then
-starts the stimulus:
+Start the Unicorn LSL Interface and click Start. Then, on the same machine,
+the normal path is the session panel. It starts the recorder, waits until
+the recorder's log reports `recording_started`, and only then starts the
+stimulus:
 
 ```bash
 ./start_speller.sh
 ```
 
-To run the two by hand, call the environment's interpreter by path. On this
-machine a pipenv virtualenv earlier on `PATH` shadows `python` even after
-`conda activate`, and would run the wrong packages.
+`start_speller.sh` is a bash script. On the Windows deployment machine, run
+it from Git Bash or WSL, or call the two processes below directly from
+whatever shell you use there.
+
+To run the two by hand, call the environment's interpreter by path rather
+than a bare `python` -- on the Mac this repo is developed on, a pipenv
+virtualenv earlier on `PATH` shadows `python` even after `conda activate`;
+check whether the deployment machine's own environment has an equivalent
+shadowing issue before assuming it doesn't.
 
 ```bash
-PY="$(conda info --base)/envs/p300speller/bin/python"
+PY="$(conda info --base)/envs/p300speller/bin/python"   # adjust for the deployment machine's env
 "$PY" collection/record_session.py --out collection/recordings/session_001.csv
 ```
 
@@ -141,19 +159,21 @@ One CSV per session (see `record_session.py`'s module docstring for why
 CSV over Parquet), columns:
 
 ```
-timestamp, Fz, F3, C4, Cz, Pz, P3, O2, O1, marker_json_or_empty,
+timestamp, Fz, C3, Cz, C4, Pz, PO7, Oz, PO8, marker_json_or_empty,
 trial_id, flash_idx, group_json, is_target, target_char_idx
 ```
 
-- `timestamp`: LSL timestamp, mapped into this Mac's `local_clock()`
-  domain (the inlets use `proc_clocksync`). Without that mapping, EEG
-  timestamps from the VM would stay in the VM's clock and could not be
-  aligned with local markers. Whether EEG also uses `proc_dejitter` is
+- `timestamp`: LSL timestamp, mapped into this machine's `local_clock()`
+  domain (the inlets use `proc_clocksync`). On one machine the correction
+  is ~0, but the mapping stays on unconditionally: without it, an EEG
+  source on a different clock (the old split-machine variant, or any
+  future setup) would leave timestamps unaligned with local markers.
+  Whether EEG also uses `proc_dejitter` is
   one switch shared with the inference service:
   `pipeline/constants.EEG_INLET_DEJITTER` (currently off, so integrity
   checks see timestamps as delivered). The effective flags are recorded
   in the log and the integrity summary.
-- `Fz`...`O1`: the 8 Unicorn channels, one row per EEG sample (250 Hz).
+- `Fz`...`PO8`: the 8 Unicorn channels (`pipeline.constants.EEG_CHANNELS`), one row per EEG sample (250 Hz).
 - `marker_json_or_empty`: the raw JSON string pushed by
   `checkerboard_stimulus.py` if a marker landed closest to this EEG
   sample's timestamp, else empty. Markers are timestamped at the GPU
@@ -251,13 +271,14 @@ check runs on what was received and is marked `partial`.
 ## Troubleshooting
 
 - **`record_session.py` logs "Waiting for EEG stream" and exits with
-  code 3 after `--eeg-timeout`** -- the Unicorn LSL Interface on the VM/Linux box
-  either isn't running, isn't actually streaming (check it says
-  "Streaming" in its own UI, not just "Connected"), or is unreachable
-  over the network (VM network mode, firewall). LSL discovery uses UDP
-  multicast by default -- if the VM and Mac are on different virtual
-  network segments, that mode of discovery can silently fail even
-  though the VM is otherwise reachable.
+  code 3 after `--eeg-timeout`** -- the Unicorn LSL Interface either isn't
+  running, or isn't actually streaming (check it says "Streaming" in its
+  own UI, not just "Connected"). LSL discovery uses UDP multicast by
+  default; on one machine this is loopback traffic and essentially never
+  the cause. (If you're running the split-machine variant instead, also
+  check the VM's network mode and firewall -- multicast across different
+  virtual network segments can silently fail even when the other machine
+  is otherwise reachable.)
 - **Sanity check reports all channels flat (~0 uV)** -- electrodes not
   making contact, or the Unicorn isn't actually powered on despite the
   LSL Interface showing "Streaming."

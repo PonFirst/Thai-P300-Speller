@@ -769,7 +769,15 @@ def test_runner_exits_3_without_eeg(session):
 @pytest.mark.parametrize("n_channels,labels,match", [
     (7, EEG_CHANNELS[:7], "channel count"),
     (8, list(reversed(EEG_CHANNELS)), "channels: checkpoint expects"),
-    (8, ["Fz", "C3", "Cz", "C4", "Pz", "PO7", "Oz", "PO8"], "channels: checkpoint expects"),
+    # The reference paper's own montage (CLAUDE.md hard constraints): a real,
+    # different set of electrode names, used only as a mismatch example, not
+    # this project's channel identity. This literal used to equal
+    # EEG_CHANNELS's OLD value -- once EEG_CHANNELS was corrected to the real
+    # montage this case silently stopped being a mismatch at all, so
+    # check_stream_compatibility no longer raised and runner.run() hung
+    # forever in its main loop instead of failing fast. Always pick this
+    # montage independently of whatever EEG_CHANNELS currently is.
+    (8, ["Fz", "F3", "C4", "Cz", "Pz", "P3", "O2", "O1"], "channels: checkpoint expects"),
 ])
 def test_runner_exits_2_on_montage_mismatch(session, n_channels, labels, match):
     eeg_type, marker_type, inference_type = _types()

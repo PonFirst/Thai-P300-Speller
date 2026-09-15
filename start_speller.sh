@@ -17,8 +17,10 @@
 #   python collection/session_gui.py [--demo]
 #
 # NOTE: this only starts the LSL *consumer* side. The Unicorn LSL
-# Interface must already be streaming from the Windows VM / Linux box
-# before electrode dots turn green -- see collection/README_ACQUISITION.md.
+# Interface must already be streaming (on the same deployment machine --
+# see collection/README_ACQUISITION.md) before electrode dots turn green.
+# This script itself is bash: on the Windows deployment machine, run it
+# from Git Bash or WSL.
 
 set -eo pipefail
 

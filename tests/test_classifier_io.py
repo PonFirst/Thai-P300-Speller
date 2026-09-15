@@ -135,9 +135,12 @@ def test_channel_label_policy(tmp_path, fitted):
     with pytest.raises(CheckpointMismatchError, match="channel count"):
         cio.check_stream_compatibility(ckpt, channels, 250.0)
 
-    # electrode names that differ are a real montage mismatch
-    gtec_default = ["Fz", "C3", "Cz", "C4", "Pz", "PO7", "Oz", "PO8"]
-    for labels in (list(reversed(EEG_CHANNELS)), gtec_default):
+    # electrode names that differ are a real montage mismatch. The second
+    # list is the reference paper's own montage (CLAUDE.md hard constraints)
+    # -- a real, different set of electrode names, used here only as an
+    # example of a mismatch, not as this project's channel identity.
+    reference_paper_montage = ["Fz", "F3", "C4", "Cz", "Pz", "P3", "O2", "O1"]
+    for labels in (list(reversed(EEG_CHANNELS)), reference_paper_montage):
         channels, warning = policy(ckpt, labels, 8)
         assert warning is None and channels == tuple(labels)
         with pytest.raises(CheckpointMismatchError, match="^channels"):

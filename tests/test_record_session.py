@@ -392,8 +392,8 @@ def test_sanity_check_runs_on_recorded_samples_and_flags_each_channel():
 
 def test_sanity_check_is_not_a_blocking_pre_pull(tmp_path):
     clock, eeg, markers, backend = make_world()
-    p3 = rs.EEG_CHANNELS.index("P3")
-    eeg.value_fn = lambda i, t: [0.001 if c == p3 else 10.0 * math.sin(0.3 * i + c) for c in range(8)]
+    flat_idx = rs.EEG_CHANNELS.index("PO7")
+    eeg.value_fn = lambda i, t: [0.001 if c == flat_idx else 10.0 * math.sin(0.3 * i + c) for c in range(8)]
 
     code, rec, out = run_recorder(tmp_path, clock, backend, duration=3.0)
 
@@ -402,7 +402,7 @@ def test_sanity_check_is_not_a_blocking_pre_pull(tmp_path):
     assert float(rows[0]["timestamp"]) == nominal(0)      # the first 2 s are in the CSV
     sanity = events(read_log(rec.cfg.log_path), "sanity_check")
     assert len(sanity) == 1 and sanity[0]["ok"] is False and sanity[0]["n_samples"] == 500
-    assert {c["channel"]: c["status"] for c in sanity[0]["channels"]}["P3"] == "flat"
+    assert {c["channel"]: c["status"] for c in sanity[0]["channels"]}["PO7"] == "flat"
     assert "signal sanity check failed" in read_summary(out)["issues"]
 
 

@@ -64,7 +64,7 @@ def _tk_brain_hemisphere():
 
 def test_electrode_positions_and_display_order_match_tk_panel():
     assert gl.ELECTRODE_POS == _tk_assignment("ELECTRODE_POS")
-    assert gl.DISPLAY_ORDER == _tk_assignment("DISPLAY_ORDER") == ["F3", "Fz", "Cz", "C4", "P3", "Pz", "O1", "O2"]
+    assert gl.DISPLAY_ORDER == _tk_assignment("DISPLAY_ORDER") == ["Fz", "C3", "Cz", "C4", "Pz", "PO7", "Oz", "PO8"]
     assert sorted(gl.DISPLAY_ORDER) == sorted(EEG_CHANNELS)
     assert gl.DISPLAY_WINDOW_S == _tk_assignment("DISPLAY_WINDOW_S") == 4.0
     assert gl.QUALITY_WINDOW_S == _tk_assignment("QUALITY_WINDOW_S") == 1.0
@@ -520,9 +520,9 @@ def test_rejected_flash_counters_split_quality_gate_from_other():
     model = _model()
     for reason in (ev.REJECT_QUALITY_GATE, ev.REJECT_QUALITY_GATE, ev.REJECT_EPOCH_INCOMPLETE,
                    ev.REJECT_INVALID_SCORE):
-        model.apply_payload(ev.encode(ev.flash_rejected(0, 1, reason, ["Pz", "O1"])))
+        model.apply_payload(ev.encode(ev.flash_rejected(0, 1, reason, ["Pz", "PO7"])))
     assert model.rejected_quality == 2 and model.rejected_other == 2
-    assert model.rejected_text() == "Rejected flashes: 2 quality gate (last: Pz, O1) · 2 other"
+    assert model.rejected_text() == "Rejected flashes: 2 quality gate (last: Pz, PO7) · 2 other"
 
 
 @pytest.mark.parametrize("payload", [

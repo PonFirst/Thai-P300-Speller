@@ -132,7 +132,7 @@ def test_mock_fault_colours_scalp_map_and_gate_makes_the_same_call(fault, level)
         assert decision.bad_channels == (("Pz",) if level == RED else ())
 
 
-def _seconds_until_red(fault, channel="P3", chunk=5, onset_s=1.5):
+def _seconds_until_red(fault, channel="PO7", chunk=5, onset_s=1.5):
     """
     Stream mock EEG in LSL-sized chunks into the GUI's buffer, refreshing the
     scalp map every REFRESH_MS as the panel does. Returns seconds from fault

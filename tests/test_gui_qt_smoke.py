@@ -234,17 +234,17 @@ def test_samples_emitted_from_a_worker_thread_reach_the_gui_thread(rig):
 def test_flat_channel_dot_turns_red_after_one_refresh(rig):
     w = rig.window
     w.on_eeg_stream_found("MockUnicornEEG")
-    rig.feed_eeg(seconds=1.0, flat=("P3",))
-    assert w.scalp_map.level("P3") == gl.quality.UNKNOWN     # not yet refreshed
+    rig.feed_eeg(seconds=1.0, flat=("PO7",))
+    assert w.scalp_map.level("PO7") == gl.quality.UNKNOWN     # not yet refreshed
     w.refresh()
     pump()
-    assert w.scalp_map.dot_color("P3") == QColor(gl.QUALITY_RED)
+    assert w.scalp_map.dot_color("PO7") == QColor(gl.QUALITY_RED)
     for ch in EEG_CHANNELS:
-        if ch != "P3":
+        if ch != "PO7":
             assert w.scalp_map.dot_color(ch) == QColor(gl.QUALITY_GREEN), ch
 
     rgb, dpr = _rgb(w.scalp_map)
-    for ch, color in (("P3", gl.QUALITY_RED), ("Pz", gl.QUALITY_GREEN)):
+    for ch, color in (("PO7", gl.QUALITY_RED), ("Pz", gl.QUALITY_GREEN)):
         center = w.scalp_map.dot_center(ch)
         assert _near(rgb[int(center.y() * dpr), int(center.x() * dpr)], color), ch
     assert set(w.trace_view._traces) == set(gl.DISPLAY_ORDER)

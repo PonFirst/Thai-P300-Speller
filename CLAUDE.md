@@ -13,13 +13,16 @@ PhD application portfolio work (targeting CMU ECE/BME): a Thai-language P300 vis
 ## Hard constraints — do not relitigate
 
 - **Hardware path.**
-  - The dev machine is an Apple M3 Mac. BrainFlow's Unicorn class is compiled out on macOS, and g.tec's tools are Windows-only.
-  - Acquisition runs through the vendor LSL bridge on a Windows-on-ARM VM or a Linux box; everything in this repo is a pure LSL consumer.
+  - This repo is developed on an Apple M3 Mac. BrainFlow's Unicorn class is compiled out on macOS, and g.tec's tools are Windows-only, so the Mac never talks to the headset directly — everything here is a pure LSL consumer.
+  - **Deployment target: one Windows machine, not two.** The headset driver, the Unicorn LSL Interface, `record_session.py`, `pipeline/inference_service.py`, `collection/session_gui_qt.py`, and the stimulus all run together on one Windows machine the project owner fully controls. This replaced an earlier Mac+VM / Mac+Linux-box split. Every process already resolves LSL streams by type, never by hostname, so this was a deployment simplification, not an architecture change — don't reintroduce network-hop assumptions (a hardcoded remote host, a timeout padded for a network round-trip, multicast-segment caveats) now that everything resolves on localhost. The old split-machine setup still works unchanged if ever needed again; it's just no longer the documented primary path.
   - Never suggest `pip install brainflow`.
 - **The owner implements the core stopping math.**
   - `BayesianStoppingController.reset()`, `.llr()`, `.update()` stay `raise NotImplementedError` until the owner fills them in.
   - Never implement, rewrite, or "fix" them, not even to make tests pass or inside test doubles. Mocks return scripted literal values.
   - Everything around them is fair game.
+- **The inference service is a strict checkpoint loader, never a fallback trainer.** It reads the classifier path from `session_manifest.json` and refuses to start (exit 2) unless the checkpoint's channel order, sample rate, and epoch window match the live stream exactly. Never relax this "to get something running" — tests use a scripted/mocked classifier for exactly this reason, and real inference stays blocked until a real checkpoint exists from `pipeline/fit_from_recording.py`. That fit is per-subject calibration, not "retraining the algorithm" — no algorithm redesign is implied, and fitted weights are never expected to transfer to new hardware without a new fit.
+- **No dependency on g.tec's Unicorn Speller, ever, for any reason** — not a fallback, not a comparison baseline, not a customization target. The stimulus, classifier, calibration, LM prior, and stopping logic are fully custom and stay fully custom. The only g.tec software this project touches is the Unicorn LSL Interface, a raw data relay with no P300 logic of its own. A task that seems to need Unicorn Speller needs to be solved in this project's own code instead.
+- **The montage is `Fz, C3, Cz, C4, Pz, PO7, Oz, PO8` — the Unicorn Hybrid Black's factory-default cap, now verified, not the reference paper's layout.** Confirmed against g.tec's own Unicorn Suite Hybrid Black user manual (github.com/unicorn-bi/Unicorn-Suite-Hybrid-Black-User-Manual), cross-checked against a MathWorks third-party support-package listing and multiple published papers using this exact headset. The earlier assumption (`Fz, F3, C4, Cz, Pz, P3, O2, O1`) was inherited from Pananookooln et al.'s own EEG system and cap and was never actually checked against this project's hardware — four of the eight positions are genuinely different scalp sites, not relabelling: C3 vs. the old F3, PO7 vs. P3, Oz vs. O2, PO8 vs. O1. `pipeline/constants.EEG_CHANNELS` is the single definition; every other file imports it. Any recording or checkpoint made before this correction used the wrong channel identities on four of eight channels and is not safe to fit or evaluate against — treat any pre-correction `collection/recordings/*.csv` or `models/*` as invalid, not as a shortcut. Don't drift back toward the reference paper's montage.
 - **Every recording logs full per-flash metadata.** Never regress this.
 - **Don't modify the stimulus or the classifier without an explicit ask.**
   - `collection/checkerboard_stimulus.py` was out of scope in the last round.
@@ -64,7 +67,7 @@ collection/
   checkerboard_stimulus.py       PsychoPy matrix, cue phase, JSON markers at flip time
   flash_sequence.py              pure checkerboard grouping logic
   mock_headset.py                synthetic EEG outlet: fault flags, P300 on target flashes, fixed sample grid
-  README_ACQUISITION.md          machine topology, startup order, recorder output and exit codes
+  README_ACQUISITION.md          single-machine setup (primary) + startup order, recorder output and exit codes
   checkerboard.py, checkerboard_experiment.py, test_sync.py   LEGACY, pre-contract; don't use
 pipeline/
   constants.py quality.py events.py manifest.py epoching.py   shared contracts
@@ -90,8 +93,8 @@ docs/INTERFACES.md, TESTING.md
 
 ```bash
 ./start_speller.sh --demo                       # no hardware: mock EEG + panel; recordings prefixed demo_
-./start_speller.sh                              # real headset; start the Unicorn LSL Interface FIRST
-$PY collection/mock_headset.py --flat P3 --noisy C4 --railed O1       # exercise quality colours
+./start_speller.sh                              # real headset; start the Unicorn LSL Interface FIRST (same machine)
+$PY collection/mock_headset.py --flat PO7 --noisy C4 --railed Oz      # exercise quality colours
 $PY -m pipeline.fit_from_recording --recording collection/recordings/<file>.csv --id subject_001
 $PY -m pipeline.inference_service --manifest session_manifest.json    # normally launched by the panel
 $PY tools/fake_inference_publisher.py --include-malformed             # drive the composed-text panel
@@ -119,8 +122,8 @@ QT_QPA_PLATFORM=offscreen $PY -m pytest tests/ -q
 6. **Flat channels:** peak-to-peak over the 1 s window alone kept a failed contact green for about a second. A channel is now also red when any 100 ms segment is below 1 µV. The thresholds themselves are unchanged.
 7. **Matrix orientation is unresolved.** The stimulus defaults to 8×9 (odd columns, adjacency-safe). 9×8 is NOT safe under flat-index parity without reordering the characters.
 8. **`characters_th.json` is `"verified": false`.** Confirm it against `th_offline_cb.py` before real collection.
-9. **The montage is unverified.** `EEG_CHANNELS` = Fz, F3, C4, Cz, Pz, P3, O2, O1 is not g.tec's default layout.
-   - The real device's channel labels are unknown.
+9. **The montage is now verified.** `EEG_CHANNELS` = Fz, C3, Cz, C4, Pz, PO7, Oz, PO8, the Unicorn's factory-default layout (see the hard-constraints entry above for sources). It replaced an unverified assumption inherited from the reference paper's own cap; don't reintroduce those old names as this project's channel identity.
+   - The real device's own reported channel labels (as opposed to the assumed layout) are still unconfirmed against a live stream — H2 in TESTING.md is still open.
    - The service warns on generic labels and refuses when the electrode names differ.
    - See TESTING.md H1/H2.
 10. **Thai fonts.**

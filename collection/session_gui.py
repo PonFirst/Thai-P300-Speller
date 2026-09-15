@@ -15,8 +15,10 @@ target string -- automating the ordered two-terminal startup that
 README_ACQUISITION.md otherwise describes by hand.
 
 This GUI is a pure LSL consumer, like record_session.py: it needs the
-Unicorn LSL Interface already streaming from the Windows VM / Linux box
-(no BrainFlow, no direct hardware access -- see README_ACQUISITION.md).
+Unicorn LSL Interface already streaming (no BrainFlow, no direct hardware
+access -- see README_ACQUISITION.md). Deployment runs it on the same
+Windows machine as the Interface; an older split-machine setup still
+works unchanged, since streams are resolved by type, not host.
 
 Run with:
     conda activate p300speller
@@ -50,27 +52,41 @@ from record_session import EEG_CHANNELS, SANITY_PTP_MIN_UV, SANITY_PTP_MAX_UV
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Scalp positions, top-down, normalized to a unit-radius head with the
-# nose at +y. These follow standard 10-20 projected coordinates: F3/Fz
-# share a coronal line, as do P3/Pz and C4/Cz -- an electrode map that
-# is anatomically wrong is worse than none, since it invites reading
-# "the front-left electrode is bad" off a dot that isn't front-left.
+# Scalp positions, top-down, nose at +y, laid out to fill the brain
+# silhouette rather than to sit on a unit-radius 10-20 circle (which only
+# covers the middle of the drawing and left the dots huddled around the
+# fissure).
+#
+# Real montage: Fz, C3, Cz, C4, Pz, PO7, Oz, PO8 -- the Unicorn Hybrid
+# Black's factory-default cap (see pipeline/constants.EEG_CHANNELS for the
+# verification sources; CLAUDE.md's hard constraints record the correction).
+# Four rows, evenly spaced front-to-back (0.60 / 0.12 / -0.36 / -0.84):
+# Fz alone; C3/Cz/C4 on one coronal line; Pz alone, more posterior; Oz at
+# the occipital pole, the most posterior point, on the midline. PO7/PO8 sit
+# between the Pz and Oz rows and more lateral than C3/C4 -- parieto-
+# occipital sites are more lateral than central ones in the real 10-20
+# layout, not a mirror of the central row. An electrode map that is
+# anatomically wrong is worse than none, since it invites reading "the
+# left-central electrode is bad" off a dot that isn't left-central.
+# Kept in sync with gui_logic.ELECTRODE_POS (a test asserts they are equal).
 ELECTRODE_POS = {
-    "F3": (-0.40, 0.50),
-    "Fz": (0.00, 0.50),
-    "Cz": (0.00, 0.00),
-    "C4": (0.50, 0.00),
-    "P3": (-0.40, -0.50),
-    "Pz": (0.00, -0.50),
-    "O1": (-0.25, -0.85),
-    "O2": (0.25, -0.85),
+    "Fz": (0.00, 0.60),
+    "C3": (-0.48, 0.12),
+    "Cz": (0.00, 0.12),
+    "C4": (0.48, 0.12),
+    "Pz": (0.00, -0.36),
+    "PO7": (-0.58, -0.68),
+    "Oz": (0.00, -0.84),
+    "PO8": (0.58, -0.68),
 }
 
 # Trace display order: front -> back, left -> midline -> right within a
-# level. Deliberately NOT EEG_CHANNELS order -- that is the Unicorn's
-# LSL channel index order and must stay as-is for stream indexing, but
-# it reads as scrambled on a stacked trace plot.
-DISPLAY_ORDER = ["F3", "Fz", "Cz", "C4", "P3", "Pz", "O1", "O2"]
+# level. Happens to equal EEG_CHANNELS' order for this montage (the
+# Unicorn's default cap is already wired front-to-back), but the two stay
+# separate constants: EEG_CHANNELS is stream indexing and must not move if
+# a future montage's wire order isn't front-to-back, while this one is
+# hand-curated for how the trace stack reads.
+DISPLAY_ORDER = ["Fz", "C3", "Cz", "C4", "Pz", "PO7", "Oz", "PO8"]
 
 COLOR_BG = "#fafafa"
 COLOR_FG = "#1a1a1a"

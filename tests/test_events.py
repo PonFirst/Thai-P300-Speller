@@ -111,7 +111,7 @@ def test_committed_char_must_match_characters_file():
 
 
 def test_flash_rejected_and_service_status_roundtrip():
-    rejected = ev.flash_rejected(2, 9, ev.REJECT_QUALITY_GATE, ("Pz", "O1"))
+    rejected = ev.flash_rejected(2, 9, ev.REJECT_QUALITY_GATE, ("Pz", "PO7"))
     assert ev.decode(ev.encode(rejected)) == rejected
     status = ev.service_status(ev.STATE_READY, "loaded", None)
     assert ev.decode(ev.encode(status)) == status

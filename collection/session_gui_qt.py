@@ -4,8 +4,8 @@ Session control panel for the Thai P300 speller (PySide6).
 Replaces the Tkinter panel (collection/session_gui.py, kept as a fallback)
 with the same behaviour, plus a live-inference display:
 
-  1. Live signal quality: 8 scrolling traces, front to back (F3 Fz Cz C4 P3
-     Pz O1 O2), and the two-hemisphere scalp map. Dot colours come from
+  1. Live signal quality: 8 scrolling traces, front to back (Fz C3 Cz C4 Pz
+     PO7 Oz PO8), and the two-hemisphere scalp map. Dot colours come from
      pipeline.quality.channel_levels over the last 1 s; gray means unknown
      (no data, a gap, or a stream that stopped delivering).
   2. Target entry and settings. Enter or Start launches
@@ -286,14 +286,19 @@ class ScalpMap(QWidget):
 
         radius = max(4.0, self.DOT_RADIUS * scale)
         label_font = ui_font(max(9, int(radius * 1.3)))
+        p.setFont(label_font)
+        # Size the label box from the font's own metrics. The font scales with
+        # the dot radius, so the old fixed 16 px box shaved the tops off the
+        # letters on any map big enough to push the font past 16 px.
+        label_h = p.fontMetrics().height()
+        label_w = max(60.0, label_h * 3.0)
         for ch, (x, y) in gl.ELECTRODE_POS.items():
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(self.dot_color(ch))
             p.drawEllipse(self.to_px(x, y), radius, radius)
             anchor = self.to_px(x, y + 0.13)
             p.setPen(QColor(gl.COLOR_FG))
-            p.setFont(label_font)
-            p.drawText(QRectF(anchor.x() - 30, anchor.y() - 16, 60, 16),
+            p.drawText(QRectF(anchor.x() - label_w / 2, anchor.y() - label_h, label_w, label_h),
                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, ch)
 
         legend_font = ui_font(max(10, int(radius * 1.4)))

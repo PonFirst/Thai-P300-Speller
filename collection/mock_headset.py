@@ -34,7 +34,7 @@ brain produced it.
 
 Usage:
     python mock_headset.py                          # all channels good
-    python mock_headset.py --flat P3 --noisy C4     # simulate bad contacts
+    python mock_headset.py --flat PO7 --noisy C4    # simulate bad contacts
     python mock_headset.py --no-p300                # background noise only
     python mock_headset.py --eeg-type EEGQA_1 --marker-type MarkersQA_1   # isolated QA streams
 """
@@ -65,13 +65,16 @@ P300_AMPLITUDE_UV = 6.0
 P300_DURATION_S = 0.8        # after this, an event contributes ~nothing
 
 # Relative P300 amplitude per channel: maximal centro-parietal (Pz/Cz),
-# tapering frontally and occipitally. Keeps ERP/topography output
-# anatomically plausible instead of uniform across the montage.
+# tapering toward frontal (Fz), central-lateral (C3/C4), and
+# parieto-occipital (PO7/PO8/Oz) sites. Keeps ERP/topography output
+# anatomically plausible instead of uniform across the montage. Keys are
+# pipeline.constants.EEG_CHANNELS' real montage (Fz, C3, Cz, C4, Pz, PO7,
+# Oz, PO8) -- see CLAUDE.md's hard constraints for the montage correction.
 CHANNEL_GAIN = {
-    "Fz": 0.45, "F3": 0.35,
-    "Cz": 0.90, "C4": 0.70,
-    "Pz": 1.00, "P3": 0.80,
-    "O1": 0.40, "O2": 0.40,
+    "Fz": 0.45,
+    "C3": 0.65, "Cz": 0.90, "C4": 0.70,
+    "Pz": 1.00,
+    "PO7": 0.55, "Oz": 0.45, "PO8": 0.55,
 }
 
 # Converts the unit-variance filtered noise into microvolts. Tuned so a

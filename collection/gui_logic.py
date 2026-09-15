@@ -45,21 +45,38 @@ RECORDINGS_DIR = COLLECTION_DIR / "recordings"
 # Display constants (ported unchanged from the Tkinter panel)
 # ----------------------------------------------------------------------
 
-# Scalp positions, top-down, unit-radius head, nose at +y (standard 10-20
-# projected coordinates; F3/Fz, C4/Cz and P3/Pz share coronal lines).
+# Scalp positions, top-down, nose at +y, laid out to fill brain_hemisphere()'s
+# silhouette rather than to sit on a unit-radius 10-20 circle (which only
+# covers the middle of the drawing and left the dots huddled around the
+# fissure).
+#
+# Real montage: Fz, C3, Cz, C4, Pz, PO7, Oz, PO8 -- the Unicorn Hybrid
+# Black's factory-default cap (see pipeline/constants.EEG_CHANNELS for the
+# verification sources; CLAUDE.md's hard constraints record the correction).
+# This positions the dots to match real relative 10-20 geometry, not just to
+# match the names:
+#   - Four rows, evenly spaced front-to-back (0.60 / 0.12 / -0.36 / -0.84):
+#     Fz alone; C3/Cz/C4 on one coronal line; Pz alone, more posterior;
+#     Oz at the occipital pole, the most posterior point, on the midline.
+#   - PO7/PO8 sit between the Pz and Oz rows (y=-0.68), and more lateral
+#     than C3/C4 (|x|=0.58 vs 0.48) -- parieto-occipital sites are more
+#     lateral than central ones in the real 10-20 layout, not a mirror of
+#     the central row.
+#   - All eight checked inside brain_hemisphere()'s outline with
+#     matplotlib.path.Path against the actual rendered polygon, not
+#     eyeballed.
 ELECTRODE_POS = {
-    "F3": (-0.40, 0.50),
-    "Fz": (0.00, 0.50),
-    "Cz": (0.00, 0.00),
-    "C4": (0.50, 0.00),
-    "P3": (-0.40, -0.50),
-    "Pz": (0.00, -0.50),
-    "O1": (-0.25, -0.85),
-    "O2": (0.25, -0.85),
+    "Fz": (0.00, 0.60),
+    "C3": (-0.48, 0.12),
+    "Cz": (0.00, 0.12),
+    "C4": (0.48, 0.12),
+    "Pz": (0.00, -0.36),
+    "PO7": (-0.58, -0.68),
+    "Oz": (0.00, -0.84),
+    "PO8": (0.58, -0.68),
 }
 
-# Front -> back. Deliberately NOT EEG_CHANNELS, which is stream index order.
-DISPLAY_ORDER = ["F3", "Fz", "Cz", "C4", "P3", "Pz", "O1", "O2"]
+DISPLAY_ORDER = ["Fz", "C3", "Cz", "C4", "Pz", "PO7", "Oz", "PO8"]
 
 DISPLAY_WINDOW_S = 4.0
 QUALITY_WINDOW_S = 1.0
