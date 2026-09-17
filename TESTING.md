@@ -11,7 +11,7 @@ PY="$(conda info --base)/envs/p300speller/bin/python"
 QT_QPA_PLATFORM=offscreen "$PY" -m pytest tests/ -q          # full suite, about 1-2 minutes
 ```
 
-**Expected: everything passes except the 4 tests in `tests/test_bayesian_stopping.py`.** They fail with `NotImplementedError` until `reset()`, `llr()` and `update()` are implemented by hand. That is intentional.
+**Expected: everything passes.** `reset()`, `llr()`, and `update()` in `stopping/bayesian_stopping.py` are now filled in by hand and verified against a hand-worked toy example in `tests/test_bayesian_stopping.py`. Three tests self-skip with "BayesianStoppingController.reset() is implemented now" (`test_fault_injection.py`, `test_inference_service.py` x2) -- they exist to check stub-only behaviour and correctly stand down now that it's filled in.
 
 Per component:
 
@@ -19,6 +19,7 @@ Per component:
 "$PY" -m pytest tests/test_quality.py tests/test_events.py tests/test_manifest.py tests/test_epoching.py   # contracts
 "$PY" -m pytest tests/test_record_session.py                                                              # recorder
 "$PY" -m pytest tests/test_classifier_io.py tests/test_language_model.py tests/test_fit_from_recording.py tests/test_inference_service.py
+"$PY" -m pytest tests/test_bayesian_stopping.py tests/test_calibrate.py tests/test_lm_prior.py tests/test_evaluate_recording.py  # stopping + replay/ITR
 QT_QPA_PLATFORM=offscreen "$PY" -m pytest tests/test_gui_logic.py tests/test_gui_qt_smoke.py              # GUI
 "$PY" -m pytest tests/test_stimulus_consumer_wait.py                                                      # stimulus
 QT_QPA_PLATFORM=offscreen "$PY" -m pytest tests/test_board_schedule.py tests/test_board_qt.py               # in-window board
@@ -264,9 +265,9 @@ EOF
     - Hovering shows the reason and the flash count. (V, except hover)
 12. **Manifest mismatch.** Run `$PY tools/fake_inference_publisher.py --fingerprint 0000`. A red "…session manifest mismatch…" banner appears and no characters are shown. (V)
 13. **Service configuration error.** Tick Live inference with the dummy manifest and press Start. The message reads "Live inference refused to start: configuration, manifest or checkpoint error: … Session not started.", with no liblsl log lines in it. The recorder is never launched. (V)
-14. **Controller stub.** Use a real manifest from `pipeline.fit_from_recording`, tick Live inference, and press Start.
+14. **Live controller run.** Use a real manifest from `pipeline.fit_from_recording`, tick Live inference, and press Start.
     - "Live inference ready.", then the recorder and stimulus launch.
-    - At the first trial: red "Live inference stopped: BayesianStoppingController.reset() is not implemented yet … Recording continues."
+    - `reset()`/`llr()`/`update()` are filled in now (see the hard-constraints note in `CLAUDE.md`), so the trial should run to a real commit instead of erroring: the gauge advances flash by flash and a character is composed. This item described the old `NotImplementedError` stub path before that; it needs a fresh hardware re-check against the implemented controller (no (V) yet).
 15. **Tk fallback.** With the mock running, `$PY collection/session_gui.py --demo` still opens the old panel.
 
 ## Hardware-in-the-loop checks (Unicorn Hybrid Black)

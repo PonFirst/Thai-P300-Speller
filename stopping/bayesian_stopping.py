@@ -6,11 +6,13 @@ log domain after each flash via Bayes' rule, with a FIXED confidence
 threshold theta (no boundary-aware term -- boundary-probability
 thresholding was descoped, may return later, do not build it here).
 
-CRITICAL: reset(), llr(), and update() below are deliberately left as
-NotImplementedError. The author is implementing the Bayes posterior
-update, the score-to-LLR conversion, and the stopping-condition check
-themselves to maintain mastery of the math for technical interviews.
-Do not fill these in.
+reset(), llr(), and update() below were implemented by hand by the author
+-- the Bayes posterior update, the score-to-LLR conversion, and the
+stopping-condition check -- deliberately, to maintain mastery of the math
+for technical interviews, and are verified against a hand-worked toy
+example in tests/test_bayesian_stopping.py. Do not rewrite or "fix" them
+without an explicit ask; that protection doesn't end just because they're
+filled in now.
 """
 
 import numpy as np
@@ -83,11 +85,9 @@ class BayesianStoppingController:
             p0 = lam * lm_prior + (1 - lam) / n_chars
         store log(p0) in self.log_p, and reset self.t to 0.
         """
-        raise NotImplementedError(
-            "reset(): blend lm_prior with a uniform floor per "
-            "p0 = lam * lm_prior + (1 - lam) / n_chars, store log(p0) "
-            "in self.log_p, and reset self.t to 0."
-        )
+        p0 = self.lam * lm_prior + (1 - self.lam) / self.n_chars
+        self.log_p = np.log(p0)
+        self.t = 0
 
     def llr(self, s_t: float, pi: float) -> float:
         """
@@ -107,10 +107,9 @@ class BayesianStoppingController:
                 = (sigmoid_a * s_t + sigmoid_b) + log((1 - pi) / pi)
         clip to +/- self.llr_clip, and return as a float.
         """
-        raise NotImplementedError(
-            "llr(): derive ell = sigmoid_a*s_t + sigmoid_b + "
-            "log((1-pi)/pi), clip to +/- self.llr_clip."
-        )
+        ell = (self.sigmoid_a * s_t + self.sigmoid_b) + np.log((1 - pi) / pi)
+        clipped_ell = np.clip(ell, -self.llr_clip, self.llr_clip)
+        return float(clipped_ell)
 
     def update(self, group_idx: list[int], s_t: float, pi: float):
         """
@@ -135,9 +134,13 @@ class BayesianStoppingController:
         stop if the posterior max >= self.theta, OR unconditionally
         once self.t >= t_max (forced stop, argmax wins either way).
         """
-        raise NotImplementedError(
-            "update(): additive log update on group_idx only via "
-            "self.llr(s_t, pi), renormalize with log_normalize(), "
-            "increment self.t, then check posterior max against "
-            "self.theta respecting t_min/t_max."
-        )
+        self.log_p[group_idx] += self.llr(s_t, pi)
+        self.log_p = log_normalize(self.log_p)
+        self.t += 1
+        max_idx = int(np.argmax(self.log_p))
+        max_p = np.exp(self.log_p[max_idx])
+        if self.t >= self.t_min and max_p >= self.theta:
+            return True, max_idx
+        if self.t >= self.t_max:
+            return True, max_idx
+        return False, None

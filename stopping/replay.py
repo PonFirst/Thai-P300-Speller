@@ -44,7 +44,6 @@ def simulate_trial(scores, group_ids, groups, true_char_idx, ctrl, lm_prior):
 
     n_flashes_used = 0
     predicted_char = None
-    pi = len(groups[group_ids[0]]) / ctrl.n_chars if len(scores) > 0 else None
 
     for s_t, g_id in zip(scores, group_ids):
         group_idx = groups[g_id]

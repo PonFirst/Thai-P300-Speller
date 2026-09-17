@@ -264,11 +264,11 @@ Per flash, in order:
    turns the (channels × time) epoch into one real number; positive means
    "more target-like."
 4. **Convert the score to a log-likelihood ratio and update the posterior.**
-   This is the part deliberately left for the project owner to implement by
-   hand (`stopping/bayesian_stopping.py` — `llr()` and `update()` are
-   `NotImplementedError` stubs on purpose, to preserve the math as the
-   project's own contribution rather than generated code). Conceptually:
-   Platt scaling turns the raw score into `P(target | score)`; that becomes a
+   This is the part the project owner implemented by hand
+   (`stopping/bayesian_stopping.py` — `llr()` and `update()`), to keep the
+   math as their own worked derivation rather than generated code; it's
+   filled in and verified now. Conceptually: Platt scaling turns the raw
+   score into `P(target | score)`; that becomes a
    log-likelihood ratio which is added, in the log domain, only to the
    entries of the character posterior belonging to this flash's group (the
    other characters weren't shown, so their evidence doesn't change); the
@@ -373,7 +373,34 @@ session_gui_qt.py: confidence gauge updates, or a character is appended
 
 ---
 
-## 8. What's still a known limitation
+## 8. Evaluation: accuracy, mean flashes, and ITR
+
+Two separate evaluation concerns, both already implemented in code:
+
+**Classifier-level metrics**, produced automatically as a side effect of fitting (`pipeline/fit_from_recording.py`, step 3 of §4 above): out-of-fold AUC and balanced accuracy from the grouped cross-validation, plus Expected Calibration Error from `stopping/calibrate.py` — whether "the model says 80% confident" actually means correct 80% of the time. `stopping/calibrate.py` can also plot a reliability diagram, though the fit script doesn't call that automatically; it has to be invoked separately if you want the figure.
+
+**Speller-level metrics** — character accuracy, mean flashes-to-stop, and Wolpaw information transfer rate — live in `stopping/replay.py`. `simulate_trial()` replays one recorded character's flash-by-flash scores through a real `BayesianStoppingController` instance (calling the actual `reset`/`update`, not a mock), and `wolpaw_itr()` converts accuracy and mean selection time into bits/minute by the standard formula:
+
+```
+B = log2(N) + acc·log2(acc) + (1-acc)·log2((1-acc)/(N-1))     [bits/selection]
+ITR = B × (60 / seconds_per_selection)                          [bits/minute]
+```
+
+`run_sweep()` runs both across a grid of controller hyperparameters (θ, `t_min`, etc.) over a set of trials, returning one row per configuration — the accuracy/ITR-vs-threshold table a dynamic-stopping paper reports.
+
+**`stopping/evaluate_recording.py`** is the glue that gets real data into that machinery: given a session manifest (checkpoint + calibration + language model) and a recorded session's CSV, it re-derives each trial's true target and flash groups from the recording's own markers (not by re-running the stimulus's group-assignment RNG), cuts and quality-gates each flash's epoch exactly as live inference would, scores it with the checkpoint, and hands the resulting per-trial `(scores, group_ids, true_char_idx)` sequences to `run_sweep()`. Each trial's language-model prior is taken from the *true* preceding characters (ground-truth copy-spelling context) rather than the replayed controller's own predictions — a deliberate choice that isolates the stopping controller's behavior from classifier-error propagation; that's flagged in the script's own docstring since it's a citable methodological decision, not an arbitrary default. `seconds_per_flash` is measured empirically from the recording's own flash timestamps, not assumed from the paradigm's nominal timing.
+
+```bash
+python -m stopping.evaluate_recording --manifest session_manifest.json \
+    --recording collection/recordings/<held-out-session>.csv \
+    --theta 0.7 0.8 0.9 0.95 --t-min 1 3 6 --out results/replay/subject_001.csv
+```
+
+Recommended: replay a session that was *not* used to fit the checkpoint, so the reported numbers describe generalization rather than the fit itself — the script doesn't enforce this, it just takes whatever CSV it's pointed at.
+
+---
+
+## 9. What's still a known limitation
 
 - **The stimulus is open-loop.** It always runs its fixed number of
   repetitions; even after the controller commits a character early, the
@@ -389,13 +416,14 @@ session_gui_qt.py: confidence gauge updates, or a character is appended
   unmeasured. The separate PsychoPy window (GPU-flip-timestamped) remains
   the precise option for real data collection until a photodiode check
   validates the in-window board.
-- **`reset()`, `llr()`, and `update()` in `stopping/bayesian_stopping.py`
-  are intentionally unimplemented.** This is not a bug — the project owner
-  is implementing the Bayes posterior update, the score-to-LLR conversion,
-  and the stopping-condition check by hand, deliberately, to keep that math
-  as their own worked derivation.
+- **No real classifier checkpoint exists yet.** `reset()`, `llr()`, and
+  `update()` in `stopping/bayesian_stopping.py` are implemented and
+  verified now, so the algorithm side is no longer what's blocking live
+  inference — `models/` is simply empty, because no real calibration
+  recording has been made yet (and any recording made before the montage
+  correction is invalid regardless — see the hard constraints above).
 
-## 9. Standing decisions (see `CLAUDE.md` for the full, authoritative list)
+## 10. Standing decisions (see `CLAUDE.md` for the full, authoritative list)
 
 - **The inference service stays a strict checkpoint loader, never a fallback
   trainer.** It refuses to start (exit 2) unless the checkpoint's channel

@@ -16,9 +16,8 @@ PhD application portfolio work (targeting CMU ECE/BME): a Thai-language P300 vis
   - This repo is developed on an Apple M3 Mac. BrainFlow's Unicorn class is compiled out on macOS, and g.tec's tools are Windows-only, so the Mac never talks to the headset directly — everything here is a pure LSL consumer.
   - **Deployment target: one Windows machine, not two.** The headset driver, the Unicorn LSL Interface, `record_session.py`, `pipeline/inference_service.py`, `collection/session_gui_qt.py`, and the stimulus all run together on one Windows machine the project owner fully controls. This replaced an earlier Mac+VM / Mac+Linux-box split. Every process already resolves LSL streams by type, never by hostname, so this was a deployment simplification, not an architecture change — don't reintroduce network-hop assumptions (a hardcoded remote host, a timeout padded for a network round-trip, multicast-segment caveats) now that everything resolves on localhost. The old split-machine setup still works unchanged if ever needed again; it's just no longer the documented primary path.
   - Never suggest `pip install brainflow`.
-- **The owner implements the core stopping math.**
-  - `BayesianStoppingController.reset()`, `.llr()`, `.update()` stay `raise NotImplementedError` until the owner fills them in.
-  - Never implement, rewrite, or "fix" them, not even to make tests pass or inside test doubles. Mocks return scripted literal values.
+- **The core stopping math is owner-implemented and now done.** `BayesianStoppingController.reset()`, `.llr()`, `.update()` were filled in by hand (blend-with-uniform-floor prior, Platt-scaled LLR with the pi correction term, group-only log-domain update + fixed-threshold stop) and are verified against a hand-worked toy example in `tests/test_bayesian_stopping.py`.
+  - Never implement, rewrite, or "fix" them without an explicit ask — that protection doesn't end just because they're filled in now.
   - Everything around them is fair game.
 - **The inference service is a strict checkpoint loader, never a fallback trainer.** It reads the classifier path from `session_manifest.json` and refuses to start (exit 2) unless the checkpoint's channel order, sample rate, and epoch window match the live stream exactly. Never relax this "to get something running" — tests use a scripted/mocked classifier for exactly this reason, and real inference stays blocked until a real checkpoint exists from `pipeline/fit_from_recording.py`. That fit is per-subject calibration, not "retraining the algorithm" — no algorithm redesign is implied, and fitted weights are never expected to transfer to new hardware without a new fit.
 - **No dependency on g.tec's Unicorn Speller, ever, for any reason** — not a fallback, not a comparison baseline, not a customization target. The stimulus, classifier, calibration, LM prior, and stopping logic are fully custom and stay fully custom. The only g.tec software this project touches is the Unicorn LSL Interface, a raw data relay with no P300 logic of its own. A task that seems to need Unicorn Speller needs to be solved in this project's own code instead.
@@ -76,8 +75,9 @@ pipeline/
   classifier_io.py               checkpoint save/load, stream compatibility, channel-label policy
   language_model.py              LM factory (uniform | ngram), prior validated at the boundary
 stopping/
-  bayesian_stopping.py           log_normalize (done) + controller (3 owner-implemented stubs)
+  bayesian_stopping.py           log_normalize + controller: reset/llr/update, owner-implemented, done
   calibrate.py lm_prior.py replay.py   Platt/ECE, ThaiNgramLM, replay + Wolpaw ITR
+  evaluate_recording.py          real-recording replay: accuracy/mean-flashes/ITR swept over theta/t_min/...
   validate_offline.py            code validation on a FABRICATED grid, not a research result
   flash_selector.py              info-gain ordering stubs, out of scope
 tools/
@@ -101,7 +101,7 @@ $PY tools/fake_inference_publisher.py --include-malformed             # drive th
 QT_QPA_PLATFORM=offscreen $PY -m pytest tests/ -q
 ```
 
-- **Expected tests:** all pass except the 4 intentional stubs in `tests/test_bayesian_stopping.py`.
+- **Expected tests:** all pass. Three tests self-skip with "BayesianStoppingController.reset() is implemented now" (`test_fault_injection.py`, `test_inference_service.py` x2) — they exist to check stub-only behavior and correctly stand down now that it's filled in.
 - **Output locations:** recordings go to `collection/recordings/` and models to `models/` (both gitignored). Demo artifacts are always `demo_`-prefixed.
 
 ## Known gotchas — don't silently reintroduce

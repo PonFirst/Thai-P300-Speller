@@ -94,6 +94,29 @@ class PlattCalibrator:
         return self.model.predict_proba(scores.reshape(-1, 1))[:, 1]
 
 
+def _binned_stats(probs: np.ndarray, labels: np.ndarray, n_bins: int):
+    """
+    Shared equal-width-binning pass used by both expected_calibration_error()
+    and plot_reliability_diagram(), so the bin-edge/mask logic (and the
+    last-bin-inclusive-of-1.0 rule) lives in exactly one place.
+
+    Yields (n_b, conf_b, acc_b) per non-empty bin: bin count, mean predicted
+    probability, and mean true label (empty bins are skipped -- neither
+    caller has a meaningful contribution to add for them).
+    """
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    for i in range(n_bins):
+        lo, hi = bin_edges[i], bin_edges[i + 1]
+        if i == n_bins - 1:
+            mask = (probs >= lo) & (probs <= hi)
+        else:
+            mask = (probs >= lo) & (probs < hi)
+        n_b = int(mask.sum())
+        if n_b == 0:
+            continue
+        yield n_b, probs[mask].mean(), labels[mask].mean()
+
+
 def expected_calibration_error(probs: np.ndarray, labels: np.ndarray,
                                 n_bins: int = 10) -> float:
     """
@@ -115,20 +138,8 @@ def expected_calibration_error(probs: np.ndarray, labels: np.ndarray,
     labels = np.asarray(labels, dtype=int)
     n = len(probs)
 
-    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
-    ece = 0.0
-    for i in range(n_bins):
-        lo, hi = bin_edges[i], bin_edges[i + 1]
-        if i == n_bins - 1:
-            mask = (probs >= lo) & (probs <= hi)
-        else:
-            mask = (probs >= lo) & (probs < hi)
-        n_b = mask.sum()
-        if n_b == 0:
-            continue
-        acc_b = labels[mask].mean()
-        conf_b = probs[mask].mean()
-        ece += (n_b / n) * abs(acc_b - conf_b)
+    ece = sum((n_b / n) * abs(acc_b - conf_b)
+              for n_b, conf_b, acc_b in _binned_stats(probs, labels, n_bins))
     return float(ece)
 
 
@@ -152,19 +163,11 @@ def plot_reliability_diagram(probs: np.ndarray, labels: np.ndarray,
     probs = np.asarray(probs, dtype=float)
     labels = np.asarray(labels, dtype=int)
 
-    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
     bin_centers = []
     bin_acc = []
-    for i in range(n_bins):
-        lo, hi = bin_edges[i], bin_edges[i + 1]
-        if i == n_bins - 1:
-            mask = (probs >= lo) & (probs <= hi)
-        else:
-            mask = (probs >= lo) & (probs < hi)
-        if mask.sum() == 0:
-            continue
-        bin_centers.append(probs[mask].mean())
-        bin_acc.append(labels[mask].mean())
+    for _n_b, conf_b, acc_b in _binned_stats(probs, labels, n_bins):
+        bin_centers.append(conf_b)
+        bin_acc.append(acc_b)
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 

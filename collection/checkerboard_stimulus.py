@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 
 import json as _json
 
@@ -25,7 +27,11 @@ from pylsl import StreamInfo, StreamOutlet, local_clock
 
 from flash_sequence import CheckerboardConfig, build_flash_sequence
 
-MARKER_STREAM_NAME = "P300Markers"
+# This script is run standalone (python collection/checkerboard_stimulus.py), so
+# sys.path[0] is collection/, not the repo root -- pipeline.constants needs the
+# repo root added explicitly, same as record_session.py does.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pipeline.constants import MARKER_STREAM_NAME, MARKER_STREAM_TYPE  # noqa: E402
 
 
 class TrialAborted(Exception):
@@ -224,7 +230,7 @@ class ThaiCheckerboardSpeller:
         the whole point of using PsychoPy over tkinter.after() -- see
         _push_marker() below.
         """
-        info = StreamInfo(self.lsl_stream_name, "Markers", 1, 0, "string", "thai_speller_1")
+        info = StreamInfo(self.lsl_stream_name, MARKER_STREAM_TYPE, 1, 0, "string", "thai_speller_1")
         self.outlet = StreamOutlet(info)
         self._lsl_clock_offset = local_clock() - core.getTime()
         return self.outlet

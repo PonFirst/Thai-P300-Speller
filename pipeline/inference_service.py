@@ -368,7 +368,8 @@ class InferenceEngine:
         trial = _Trial(key=key, controller=self.controller_factory())
         self._trial = trial
         self._call_controller(trial, "reset", prior, flash_idx=flash_idx)
-        if not self._posterior_ok(trial, flash_idx, after="reset"):
+        ok, _ = self._posterior_ok(trial, flash_idx, after="reset")
+        if not ok:
             trial.failed = True
         self.log.info("trial %s started (context %r)", key[1], self.committed_text)
         return trial
@@ -425,11 +426,11 @@ class InferenceEngine:
         controller = trial.controller
         stop, char_idx = self._call_controller(trial, "update", list(marker.group), score,
                                                len(marker.group) / self.n_chars, flash_idx=idx)
-        if not self._posterior_ok(trial, idx, after="update"):
+        ok, posterior = self._posterior_ok(trial, idx, after="update")
+        if not ok:
             trial.failed = True
             return
         self.stats["flashes_accepted"] += 1
-        posterior = np.exp(np.asarray(controller.log_p, dtype=float))
         max_prob = min(1.0, float(posterior.max()))
         self._emit(ev.posterior_update(tid, idx, max_prob, int(posterior.argmax()), controller.theta,
                                        characters=self.characters))
@@ -463,9 +464,12 @@ class InferenceEngine:
             self._failure = ControllerNotImplementedError(method, trial.trial_id, flash_idx)
             raise self._failure from exc
 
-    def _posterior_ok(self, trial: _Trial, flash_idx, *, after: str) -> bool:
+    def _posterior_ok(self, trial: _Trial, flash_idx, *, after: str) -> tuple[bool, np.ndarray | None]:
+        """Returns (ok, posterior). posterior is the already-computed exp(log_p), reused by the
+        caller so a valid posterior is never exponentiated twice in the same flash."""
         controller = trial.controller
         problem = None
+        p = None
         try:
             log_p = np.asarray(controller.log_p, dtype=float)
         except (TypeError, ValueError):
@@ -483,11 +487,11 @@ class InferenceEngine:
         if problem is None and not (_is_nonneg_int(t) and (after != "update" or t >= 1)):
             problem = f"flash count t is {t!r}"
         if problem is None:
-            return True
+            return True, p
         where = f"flash {flash_idx}" if flash_idx is not None else "trial_start"
         self._error(f"trial {trial.trial_id}, {where}: posterior after {after}() is invalid ({problem}); "
                     "stopped processing this trial, nothing committed")
-        return False
+        return False, None
 
     def _commit(self, trial: _Trial, char_idx: int, reason: str) -> None:
         char = self.characters[char_idx]

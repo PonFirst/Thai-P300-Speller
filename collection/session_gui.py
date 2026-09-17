@@ -156,6 +156,10 @@ class EEGStreamReader(threading.Thread):
             streams = resolve_byprop("type", "EEG", timeout=1.0)
             if streams:
                 inlet = StreamInlet(streams[0])
+                # Open immediately: an unopened inlet buffers nothing, so
+                # samples pushed before the first pull would be lost (same
+                # issue as the marker inlets in record_session.py / mock_headset.py).
+                inlet.open_stream(timeout=5.0)
                 self.connected = True
                 self.status_queue.put("connected")
             else:
