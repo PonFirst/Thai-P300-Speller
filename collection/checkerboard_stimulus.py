@@ -68,9 +68,17 @@ def placeholder_characters(n_chars: int = 72) -> list[str]:
     return [f"C{i}" for i in range(n_chars)]
 
 
+# Bundled font (collection/fonts/THSarabunNew.ttf), the Thai government's official
+# public font (SIPA / Dept. of Intellectual Property, GPL-2.0+Font-exception --
+# see collection/fonts/LICENSE.txt and SOURCE.md). An absolute, __file__-relative
+# path so the default resolves regardless of the process's working directory --
+# a bare "THSarabunNew.ttf" only resolved if cwd happened to contain that file.
+DEFAULT_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "THSarabunNew.ttf")
+
+
 class ThaiCheckerboardSpeller:
     def __init__(self, characters: list[str], n_rows: int = 8, n_cols: int = 9,
-                 font_path: str | None = "THSarabunNew.ttf", font_size: float = 60,
+                 font_path: str | None = DEFAULT_FONT_PATH, font_size: float = 60,
                  flash_duration_ms: float = 62, isi_ms: float = 62,
                  n_repetitions: int = 5, inter_selection_delay_ms: float = 3500,
                  cue_duration_ms: float = 2000,
@@ -108,16 +116,31 @@ class ThaiCheckerboardSpeller:
         (adjacent characters co-flash). Don't flip these back without
         re-running validate_no_adjacent_co_flash() against the new shape.
 
-        Font note: PsychoPy's TextStim + THSarabunNew has not been
-        verified in this session to shape combining Thai tone marks and
-        vowels correctly (Thai text shaping can vary by rendering
-        backend -- pyglet/GLFW backends handle complex script shaping
-        differently than a native OS text renderer like tkinter's).
-        Run verify_thai_font_rendering() below and visually inspect the
-        saved screenshot BEFORE trusting this for real characters -- if
-        glyphs render incorrectly (marks detached/misplaced), fall back
-        to the reference implementation's pre-rendered-PNG approach for
-        the affected characters; do not ship silently-broken glyphs.
+        Font note: verified this session (verify_thai_font_rendering() and
+        several isolated-character renders, screenshots inspected by eye).
+        Findings:
+          - THSarabunNew.ttf itself is the genuine SIPA font (Thai
+            government's official public font; see collection/fonts/).
+          - Every stim this class actually creates is ONE character
+            (text=char, one per grid cell -- see _build_stims below); no
+            cell ever concatenates characters into one string. Isolated
+            combining marks/vowel signs (e.g. bare "่", "ิ") render with a
+            dotted-circle placeholder under PsychoPy's TextStim, which is
+            the standard Unicode convention for a mark with no base and is
+            correct, not a bug.
+          - What IS confirmed broken: TextStim does NOT shape a
+            MULTI-character combining sequence correctly -- rendering
+            "ก่อ" as one string detaches the tone mark instead of stacking
+            it over the preceding consonant. verify_thai_font_rendering()'s
+            own test string exercises exactly this case, and it currently
+            fails visual inspection. This doesn't affect the grid today
+            (nothing composes multiple characters into one TextStim), but
+            it means TextStim must not be used to render composed Thai
+            text (e.g. a future "spelled so far" cue) without first
+            switching to PsychoPy's TextBox2, which was confirmed to shape
+            the same "ก่อ" string correctly with the same font -- that
+            swap hasn't been made here, since this file needs an explicit
+            ask before its rendering path changes.
         """
         if len(characters) != n_rows * n_cols:
             raise ValueError(
@@ -389,7 +412,7 @@ class ThaiCheckerboardSpeller:
         return completed
 
 
-def verify_thai_font_rendering(font_path: str = "THSarabunNew.ttf",
+def verify_thai_font_rendering(font_path: str = DEFAULT_FONT_PATH,
                                 test_string: str = "ก่อ",
                                 out_path: str = "results/thai_font_check.png"):
     """
@@ -431,7 +454,7 @@ if __name__ == "__main__":
     parser.add_argument("--cue-ms", type=float, default=2000,
                          help="Cue duration in milliseconds (target highlighted "
                               "before flashing starts).")
-    parser.add_argument("--font", type=str, default="THSarabunNew.ttf",
+    parser.add_argument("--font", type=str, default=DEFAULT_FONT_PATH,
                          help="Path to a Thai Unicode font file.")
     parser.add_argument("--windowed", action="store_true",
                          help="Run in a resizable window instead of fullscreen.")

@@ -128,7 +128,7 @@ QT_QPA_PLATFORM=offscreen $PY -m pytest tests/ -q
    - See TESTING.md H1/H2.
 10. **Thai fonts.**
     - The GUI uses Sarabun, falling back to Thonburi; its tone-mark stacking is verified by an automated test.
-    - The PsychoPy stimulus still falls back from the missing `THSarabunNew.ttf` and is unverified.
+    - The PsychoPy stimulus now bundles the genuine THSarabunNew.ttf (`collection/fonts/`, SIPA's official public font, GPL-2.0+Font-exception) and `_resolve_font`'s default points at it. Visually verified: every grid cell renders one isolated character correctly (bare combining marks show the standard dotted-circle placeholder, which is correct, not broken). `TextStim` does NOT shape a multi-character combining sequence correctly (confirmed: `"ก่อ"` as one string detaches the tone mark) -- irrelevant today since no cell ever concatenates characters, but means composed Thai text must go through `TextBox2` instead if it's ever needed here, not `TextStim`.
 11. **BNCI2014-008/009 expose no row/column identity.** Report flash-level metrics only there.
 12. **Baseline correction** (`BASELINE_WINDOW`) fixed a sub-3 µV Fz artifact on the MOABB path. Don't remove it.
 13. **CV is grouped by subject, not by trial, on BNCI.** Fit-script calibration is out-of-fold, grouped by `trial_id`.
