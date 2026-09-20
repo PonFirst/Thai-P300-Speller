@@ -13,6 +13,14 @@ collection/thai_speller_logs/
 # Fitted classifier checkpoints and calibration -- derived from subject data
 models/
 
+# Manifests point at checkpoints under models/, which don't exist in a fresh
+# clone -- derived, not source, like the checkpoints themselves
+/session_manifest.json
+/demo_session_manifest.json
+
+# stopping.evaluate_recording output -- derived from a specific recording + manifest
+results/replay/
+
 # Runtime logs
 logs/
 

@@ -5,14 +5,22 @@
 
 # Analysis / classifiers / EDA
 numpy
+scipy       # used directly by pipeline/epoching.py's band-pass filter, not just a transitive sklearn/mne dep
 pandas
 scikit-learn
 mne
 moabb
 pyriemann
 matplotlib
+joblib      # used directly by pipeline/classifier_io.py for checkpoint save/load
 
-# Data collection (checkerboard.py, checkerboard_experiment.py, test_sync.py)
+# Data collection (collection/record_session.py, checkerboard_stimulus.py, board_qt.py, mock_headset.py)
 psychopy
 pylsl
-tables  # PyTables -- pulled in by psychopy's iohub; pin here to keep it matched to numpy's ABI
+tables      # PyTables -- pulled in by psychopy's iohub; pin here to keep it matched to numpy's ABI
+
+# Session control panel (collection/session_gui_qt.py, board_qt.py)
+PySide6
+
+# Test suite (see TESTING.md) -- verify a new environment with it before trusting it
+pytest

@@ -54,6 +54,8 @@ PhD application portfolio work (targeting CMU ECE/BME): a Thai-language P300 vis
 
 ```
 start_speller.sh                 ./start_speller.sh [--demo] [--manifest PATH] -> Qt panel
+setup_windows.sh                 one-time env setup on a fresh Windows machine: conda env, deps, import checks
+WINDOWS_SETUP.md                 plain-language walkthrough for setup_windows.sh + headset pairing on Windows
 collection/
   session_gui_qt.py              PySide6 panel: traces, scalp map, target entry, settings, composed text,
                                  confidence gauge; launches service -> recorder -> stimulus
