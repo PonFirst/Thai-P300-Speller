@@ -9,6 +9,13 @@ PhD application portfolio work (targeting CMU ECE/BME): a Thai-language P300 vis
   - The LM is an n-gram today.
   - The owner will build a character-level Transformer later. It will be a new `language_model` type in `pipeline/manifest.py` plus a builder in `pipeline/language_model.py`.
 - **Boundary-aware thresholding is descoped.** The paper's novelty angle is **not decided**; don't assume one.
+- **Predictive whole-word matrix cells are rejected — do not propose this again.** The idea: replace some fixed single-character cells with LM-predicted word completions, to commit multiple characters in one trial. Explored and rejected on its merits, not just "too much work":
+  - `flash_sequence.build_flash_sequence()` hard-requires an even `n_chars` (splits into two equal checkerboard colors) and `n_cols` odd (adjacency-safety); the matrix can't just shrink by an arbitrary amount.
+  - A word-completion "probability" and a next-character probability aren't the same measured quantity and can't coherently share one normalized `get_prior()` distribution without a real reformulation of what the LM prior even means for those slots.
+  - It needs a dynamically-rebuilt-per-trial matrix; everything today (the manifest's sha256-verified `characters` file, `board_schedule.py`'s pre-built whole-session flash schedule) assumes static, fixed-in-advance matrix content.
+  - Whole-word generation (not just next-character prediction) is a materially harder, separate ML task from the character-level Transformer already planned.
+  - The character-level LM prior already delivers the same underlying mechanism (biasing the starting posterior toward the likely next letter) with none of this risk — this idea's marginal benefit on top of that, even if it worked, was never established.
+  - If it resurfaces, it's future-work for the paper's discussion section, not something to build here.
 
 ## Hard constraints — do not relitigate
 
