@@ -1,13 +1,14 @@
 {
   "source": "User-supplied mid-conversation, attributed to th_offline_cb.py / self.all_poss_letters in github.com/chaklam-silpasuwanchai/EEG-Real-Time-Applications (Thai-P300-Speller). NOT independently fetched/verified against the actual source file in this session.",
   "verified": false,
-  "verification_todo": "Confirm this exact 72-item order against th_offline_cb.py directly before using it for real data collection -- this project's own design doc (Sec. 0) documents a prior incident where AI-claimed 'verified' citations were fabricated. Treat this list the same way: check the source file yourself, don't trust the '_source' label alone.",
+  "verification_todo": "Confirm the 44 consonants, 15 original vowel signs, 5 tone/diacritic marks, and remaining digits 0-5 against th_offline_cb.py directly before using this for real data collection -- this project's own design doc (Sec. 0) documents a prior incident where AI-claimed 'verified' citations were fabricated. Treat this list the same way: check the source file yourself, don't trust the '_source' label alone.",
+  "deliberate_deviations_from_source": "Two characters here are NOT from th_offline_cb.py and are not expected to match it: digits 6 and 7 were dropped, and ั (mai han-akat) and ็ (mai taikhu) were added in their place. This was a deliberate substitution, decided after finding both marks were missing from the reference list and are common enough in everyday Thai (วัน 'day', รัก 'love', เด็ก 'child', เย็น 'cold/evening') that their absence forced awkward, unnatural sentence choices during calibration-text design. Digits 6/7 were judged far less valuable for a communication-focused speller than these two marks. Total count is unchanged at 72 (8x9 grid), so this does not affect flash_sequence.py's checkerboard-safety math, which depends only on index parity vs. grid position, not character identity.",
   "characters": [
     "ก", "ข", "ฃ", "ค", "ฅ", "ฆ", "ง", "จ", "ฉ", "ช", "ซ", "ฌ", "ญ",
     "ฎ", "ฏ", "ฐ", "ฑ", "ฒ", "ณ", "ด", "ต", "ถ", "ท", "ธ", "น", "บ", "ป",
     "ผ", "ฝ", "พ", "ฟ", "ภ", "ม", "ย", "ร", "ล", "ว", "ศ", "ษ", "ส", "ห", "ฬ", "อ", "ฮ",
-    "ะ", "า", "ิ", "ี", "ึ", "ื", "ุ", "ู", "เ", "แ", "โ", "ำ", "ไ", "ใ", "ๆ",
+    "ะ", "า", "ิ", "ี", "ั", "ึ", "ื", "ุ", "ู", "เ", "แ", "โ", "ำ", "ไ", "ใ", "ๆ", "็",
     "่", "้", "๊", "๋", "์",
-    "0", "1", "2", "3", "4", "5", "6", "7"
+    "0", "1", "2", "3", "4", "5"
   ]
 }
