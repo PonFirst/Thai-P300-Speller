@@ -331,7 +331,7 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
             "subject_id": subject_id,
             "demo": demo,
             "recording": {
-                "path": str(rec.path), "sha256": rec.sha256, "n_rows": rec.n_rows,
+                "path": rec.path.as_posix(), "sha256": rec.sha256, "n_rows": rec.n_rows,
                 "n_eeg_samples": int(len(rec.timestamps)), "n_non_eeg_rows": rec.n_non_eeg_rows,
                 "n_flash_markers": len(rec.flashes), "n_malformed_markers": rec.n_malformed_markers,
                 "n_duplicate_flashes": rec.n_duplicate_flashes,
@@ -349,9 +349,9 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
             "platt": {"a": float(a), "b": float(b), "ece": float(ece), "n_scores": int(len(oof)),
                       "fitted_on": "out-of-fold decision scores"},
             "artifacts": {
-                "classifier": {"path": str(ckpt_path), "sha256": sha256_file(ckpt_path)},
-                "calibration": {"path": str(cal_path), "sha256": sha256_file(cal_path)},
-                "manifest": {"path": str(manifest.path), "fingerprint": manifest.fingerprint},
+                "classifier": {"path": Path(ckpt_path).as_posix(), "sha256": sha256_file(ckpt_path)},
+                "calibration": {"path": Path(cal_path).as_posix(), "sha256": sha256_file(cal_path)},
+                "manifest": {"path": manifest.path.as_posix(), "fingerprint": manifest.fingerprint},
             },
             "language_model": manifest.lm_config,
             "versions": library_versions(),

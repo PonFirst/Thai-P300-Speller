@@ -850,7 +850,7 @@ class SessionLogger:
     def begin(self, settings: SessionSettings, out_path, manifest_path) -> Path:
         manifest = None
         if manifest_path is not None:
-            manifest = {"path": str(manifest_path), "fingerprint": None, "language_model": None}
+            manifest = {"path": Path(manifest_path).as_posix(), "fingerprint": None, "language_model": None}
             try:
                 loaded = load_manifest(manifest_path, verify_hashes=False)
                 manifest["fingerprint"] = loaded.fingerprint

@@ -150,10 +150,13 @@ def build_session_record(*, session_id: str, demo: bool, targets: str, character
         "settings": dict(settings),
         "manifest": manifest,
         "files": {
-            "recording": str(recording),
-            "recorder_log": str(recorder_log_path(recording)),
-            "integrity": str(integrity_path(recording)),
-            "inference_log": str(inference_log_path(recording)) if live else None,
+            # .as_posix(), not str(): these paths are stored for people (and this project's own
+            # tests) to read, and Windows' APIs accept forward slashes fine, so there's no reason
+            # for the log format itself to vary by platform.
+            "recording": Path(recording).as_posix(),
+            "recorder_log": recorder_log_path(recording).as_posix(),
+            "integrity": integrity_path(recording).as_posix(),
+            "inference_log": inference_log_path(recording).as_posix() if live else None,
         },
         "started_utc": started_utc,
         "ended_utc": None,

@@ -11,7 +11,10 @@ doesn't sum to 1.
 
 "transformer" loads a stopping/gpt_dev.ipynb checkpoint via
 stopping.transformer_lm.ThaiTransformerLM -- same factory pattern as "ngram",
-just a different builder registered in LM_BUILDERS.
+just a different builder registered in LM_BUILDERS. That module imports
+torch, so it's imported lazily inside _build_transformer(): a manifest using
+"uniform" or "ngram" (the common case on a fresh install, before a Transformer
+checkpoint exists) never needs torch to import cleanly.
 """
 
 from __future__ import annotations
@@ -21,7 +24,6 @@ from typing import Callable, Protocol
 import numpy as np
 
 from stopping.lm_prior import ThaiNgramLM
-from stopping.transformer_lm import ThaiTransformerLM
 
 PRIOR_SUM_TOLERANCE = 1e-6
 
@@ -92,6 +94,8 @@ def _build_ngram(lm_config: dict, manifest, characters: list[str]):
 
 
 def _build_transformer(lm_config: dict, manifest, characters: list[str]):
+    from stopping.transformer_lm import ThaiTransformerLM  # torch: only needed for this LM type
+
     checkpoint = manifest.transformer_checkpoint_path
     if checkpoint is None or not checkpoint.is_file():
         raise LanguageModelError(f"transformer language model: checkpoint not found at {checkpoint}")

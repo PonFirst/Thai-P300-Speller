@@ -247,8 +247,10 @@ def load_experiment(*, recording=None, inference_log=None, fit_report=None,
     report = xlog.read_json_if_exists(report_path) if report_path else None
     if fit_report and report is None:
         raise SummaryError(f"cannot read fit report {fit_report}")
-    return {"session": session, "fit_report": report, "fit_report_path": str(report_path) if report_path else None,
-            "inference_log": str(inference_log), "unparseable_log_lines": n_bad, "inference": summary}
+    return {"session": session, "fit_report": report,
+            "fit_report_path": report_path.as_posix() if report_path else None,
+            "inference_log": Path(inference_log).as_posix(), "unparseable_log_lines": n_bad,
+            "inference": summary}
 
 
 def _fmt(value, spec=".3f", missing="n/a"):

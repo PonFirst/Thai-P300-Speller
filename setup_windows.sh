@@ -112,6 +112,20 @@ if [ "$FAILED" -eq 1 ]; then
 fi
 
 echo ""
+echo "=== Checking torch (only needed for --lm-transformer-checkpoint) ==="
+# Not in the required list above: pipeline/language_model.py imports it lazily, so uniform
+# and ngram manifests work fine even if this fails. Checked separately, non-fatally, so a
+# broken torch install is visible now rather than mid-session the first time --lm-transformer-
+# checkpoint is used.
+if "$PY" -c "import torch" >/dev/null 2>&1; then
+    echo "  OK    torch"
+else
+    echo "  WARN  torch did not import -- the Transformer LM (--lm-transformer-checkpoint) will"
+    echo "        not work until this is fixed; uniform and ngram are unaffected. Re-run:"
+    echo "        $PY -m pip install torch"
+fi
+
+echo ""
 echo "=== Environment '${ENV_NAME}' is ready ==="
 echo "PY=\"$PY\""
 
