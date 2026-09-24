@@ -37,8 +37,10 @@ troubleshooting detail), see `collection/README_ACQUISITION.md` and `TESTING.md`
    This creates the Python environment, installs everything the project needs, and
    (with `--test`) runs the full test suite as a final check. It takes a few minutes.
    You should see a wall of `OK` lines and, at the end, something like
-   `544 passed, 3 skipped`. If anything says `FAIL`, stop here and fix that one
-   thing before moving on — don't continue with a half-working environment.
+   `676 passed, 3 skipped`. If anything says `FAIL`, stop here and fix that one
+   thing before moving on — don't continue with a half-working environment. A `WARN`
+   line about `torch` not importing is not fatal — it only affects the Transformer
+   LM (`--lm-transformer-checkpoint`); uniform and ngram work regardless.
 
 ## Part 3 — Install g.tec's software and connect the headset
 

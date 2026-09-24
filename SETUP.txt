@@ -1,0 +1,137 @@
+THAI P300 SPELLER -- WINDOWS SETUP CHECKLIST
+==============================================
+Quick reference for getting this project running on the Windows machine.
+For more detail than this file gives, see WINDOWS_SETUP.md (plain-language
+walkthrough), CLAUDE.md (full project reference), and TESTING.md
+(troubleshooting a real headset connection, checks H1-H11).
+
+This repo has no GitHub remote set up yet, so "download everything" means a
+direct file transfer, not git clone. That's fine -- the actual code is small.
+
+
+STEP 0 -- WHAT TO BRING OVER FROM THE MAC
+------------------------------------------
+Two separate things. Do not just zip the whole project folder -- it also
+contains ~110MB of Mac-only dev files you don't need on Windows (a training
+corpus under stopping/data/, and this Mac's own local test recordings under
+collection/recordings/).
+
+  (a) THE CODE (~1.7MB). On the Mac, in Terminal, from the project folder:
+        git archive -o ~/Desktop/p300speller_code.zip HEAD
+      This zips exactly what's tracked in git -- nothing extra, nothing
+      missing. Move p300speller_code.zip to the Windows machine (AirDrop to
+      a phone + transfer, a USB drive, email, Dropbox/Google Drive/OneDrive
+      -- whatever's easiest) and unzip it into a folder, e.g.
+        C:\Users\<you>\p300speller\
+      (If you set up a GitHub remote later, you can switch to a normal
+      git clone / git pull instead -- see the earlier conversation about
+      that. Not required for tomorrow.)
+
+  (b) THE TRAINED TRANSFORMER CHECKPOINT (~22MB). This is gitignored, so it
+      is NOT in the zip above -- it has to be copied separately, once:
+        models/thai_gpt_checkpoint.pt
+      Copy this one file the same way (AirDrop/USB/cloud drive) into the
+      same spot inside the Windows folder:
+        C:\Users\<you>\p300speller\models\thai_gpt_checkpoint.pt
+      You don't need anything else from stopping/data/ or
+      collection/recordings/ -- those are Mac-side dev artifacts only.
+
+
+STEP 1 -- INSTALL MINICONDA
+----------------------------
+  https://docs.conda.io/en/latest/miniconda.html
+  Click through the installer with defaults.
+
+
+STEP 2 -- INSTALL GIT FOR WINDOWS (gives you Git Bash)
+--------------------------------------------------------
+  https://git-scm.com/download/win
+  The setup scripts are bash scripts (.sh) -- they run in Git Bash, NOT in
+  PowerShell or the regular Command Prompt. Do everything below inside
+  Git Bash.
+
+
+STEP 3 -- RUN THE SETUP SCRIPT
+--------------------------------
+  In Git Bash:
+    cd "/c/Users/<you>/p300speller"
+    bash setup_windows.sh --test
+
+  This creates the "p300speller" conda environment, installs every
+  dependency from requirements.txt, and runs the full test suite as a final
+  check. Takes a few minutes.
+
+  Expect at the end:
+    676 passed, 3 skipped
+  A "WARN torch did not import" line is NOT fatal by itself -- it only
+  affects the Transformer language model (see Step 6); everything else
+  still works. Any line that says FAIL is real -- stop and fix it (usually
+  a missing Visual C++ Redistributable for PsychoPy or PySide6 -- install
+  the latest one from Microsoft and re-run) before moving on.
+
+  The script prints the exact Python interpreter path near the end, e.g.:
+    Using interpreter: "C:\Users\<you>\miniconda3\envs\p300speller\python.exe"
+  That is the "$PY" referred to everywhere below and in every other doc in
+  this repo. Always use that exact path, never a bare "python" -- write it
+  down or copy it somewhere handy.
+
+
+STEP 4 -- INSTALL G.TEC'S SOFTWARE AND PAIR THE HEADSET
+-----------------------------------------------------------
+  1. Install Unicorn Suite (g.tec's software -- USB stick in the headset
+     box, or from g.tec's website).
+  2. Plug the Bluetooth dongle into a USB port on the PC.
+  3. Turn the headset on: hold its power button for 2 seconds. LED should
+     start flashing.
+  4. Open Unicorn Suite -> "My Unicorn" tab. Click the headset, follow the
+     Windows pairing pop-up.
+  5. Open the Unicorn LSL Interface app (also part of Unicorn Suite) and
+     click Start. It must say "Streaming", not just "Connected".
+
+
+STEP 5 -- TRY DEMO MODE FIRST (NO HEADSET NEEDED)
+----------------------------------------------------
+  In Git Bash:
+    bash start_speller.sh --demo
+  A window should open with a Thai character grid, live fake EEG traces,
+  and a scalp map with green dots. Confirms the software side works before
+  you touch real hardware. Close it when done.
+
+
+STEP 6 -- RUN IT FOR REAL
+----------------------------
+  1. Confirm the Unicorn LSL Interface still says "Streaming".
+  2. In Git Bash:
+       bash start_speller.sh
+  3. Every scalp-map dot should turn green within a few seconds. A dot
+     stuck red/gray means that electrode isn't making contact -- re-seat it.
+  4. Type a calibration sentence into "Target characters", press Start.
+
+  To fit a classifier afterward, using the Transformer as the language
+  model (recommended -- see CLAUDE.md for why):
+    $PY -m pipeline.fit_from_recording --recording collection/recordings/<file>.csv \
+        --id subject_001 --lm-transformer-checkpoint models/thai_gpt_checkpoint.pt
+
+  ($PY = the exact interpreter path Step 3 printed. If models/thai_gpt_
+  checkpoint.pt isn't there, go back to Step 0(b) -- this flag will fail
+  with a clear "checkpoint not found" error if it's missing.)
+
+  Then run a live session and summarize it:
+    $PY -m stopping.summarize_experiment --recording collection/recordings/<test_session>.csv
+
+
+IF SOMETHING GOES WRONG
+--------------------------
+  - setup_windows.sh fails on a package -- almost always a missing Visual
+    C++ Redistributable (PsychoPy/PySide6 are the usual culprits). Install
+    it from Microsoft, re-run the script.
+  - Scalp map won't turn green -- check Unicorn LSL Interface really says
+    "Streaming". If it does, it's electrode contact.
+  - Can't pair / two Bluetooth devices fighting -- disable the laptop's own
+    built-in Bluetooth in Device Manager so it doesn't compete with the
+    Unicorn dongle.
+  - --lm-transformer-checkpoint fails -- check torch actually imported in
+    Step 3 ($PY -c "import torch"), and that the checkpoint file in Step
+    0(b) actually made it to models/thai_gpt_checkpoint.pt.
+  - Anything else -- TESTING.md's "Hardware-in-the-loop checks" (H1-H11)
+    walk through diagnosing a real connection step by step.
