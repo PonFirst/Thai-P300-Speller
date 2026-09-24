@@ -17,6 +17,7 @@ joblib      # used directly by pipeline/classifier_io.py for checkpoint save/loa
 # Data collection (collection/record_session.py, checkerboard_stimulus.py, board_qt.py, mock_headset.py)
 psychopy
 pylsl
+pyserial    # collection/unicorn_relay.py reads the headset's Bluetooth serial port (also a psychopy dependency)
 tables      # PyTables -- pulled in by psychopy's iohub; pin here to keep it matched to numpy's ABI
 
 # Session control panel (collection/session_gui_qt.py, board_qt.py)
@@ -24,3 +25,7 @@ PySide6
 
 # Test suite (see TESTING.md) -- verify a new environment with it before trusting it
 pytest
+
+# Thai character-level Transformer LM prior (stopping/gpt_dev.ipynb)
+torch
+jupyter

@@ -4,7 +4,8 @@
 # live-inference display, and calibration/recording launcher).
 #
 # Usage:
-#   ./start_speller.sh                          # real headset (requires the Unicorn LSL Interface)
+#   ./start_speller.sh                          # real headset (Windows: the Unicorn LSL Interface;
+#                                               Mac: python collection/unicorn_relay.py)
 #   ./start_speller.sh --demo                   # no hardware: synthetic EEG + P300 responses
 #   ./start_speller.sh --manifest path/to/session_manifest.json
 #
@@ -17,8 +18,9 @@
 #   python collection/session_gui.py [--demo]
 #
 # NOTE: this only starts the LSL *consumer* side. The Unicorn LSL
-# Interface must already be streaming (on the same deployment machine --
-# see collection/README_ACQUISITION.md) before electrode dots turn green.
+# Interface (Windows) or collection/unicorn_relay.py (Mac) must already be
+# streaming (on this machine -- see collection/README_ACQUISITION.md) before
+# electrode dots turn green.
 # This script itself is bash: on the Windows deployment machine, run it
 # from Git Bash or WSL.
 

@@ -480,6 +480,143 @@ def test_real_controller_stub_names_reset():
 
 
 # ---------------------------------------------------------------------------
+# experiment log: the structured records the engine writes to its logger
+# ---------------------------------------------------------------------------
+
+class _FieldsCapture(logging.Handler):
+    """Collects the structured `fields` of every record, i.e. what JsonLinesFormatter writes."""
+
+    def __init__(self):
+        super().__init__()
+        self.records = []
+
+    def emit(self, record):
+        fields = getattr(record, "fields", None)
+        if isinstance(fields, dict):
+            self.records.append(dict(fields))
+
+    def of(self, event):
+        return [r for r in self.records if r.get("event") == event]
+
+
+def make_logged_engine(controllers, scores, prior):
+    capture = _FieldsCapture()
+    logger = logging.getLogger(f"test.engine.{uuid.uuid4().hex}")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.addHandler(capture)
+    events = []
+    engine = InferenceEngine(controller_factory=Factory(controllers), language_model=FixedLM(prior),
+                             scorer=ScriptedScorer(scores), epoch_spec=SPEC, gate_policy="skip",
+                             characters=CHARS, emit=events.append, fingerprint=FP, logger=logger)
+    return engine, capture
+
+
+LM_PRIOR = [0.7, 0.1, 0.1, 0.1]     # what the language model says
+BLENDED = [0.4, 0.3, 0.2, 0.1]      # what the (scripted) controller starts its posterior from
+
+
+def test_log_has_the_lm_prior_at_trial_start_and_every_flash_after():
+    c = ScriptedController([(P1, False, None), (P3, True, 0)], reset_posterior=BLENDED, t_min=2)
+    engine, cap = make_logged_engine([c], [1.5, 2.0], LM_PRIOR)
+    start(engine, 0, T0 + 1.5)
+    flash(engine, 0, 0, [0, 1], T0 + 2.0)
+    flash(engine, 0, 1, [0], T0 + 2.0 + SOA)
+    end(engine, 0, T0 + 2.0 + 2 * SOA)
+    Stream().feed_until(engine, T0 + 5.0)
+
+    (opening,) = cap.of("trial_start")
+    assert opening["trial_id"] == 0 and opening["context"] == ""
+    assert opening["lm_prior"] == LM_PRIOR            # the LM's own distribution ...
+    assert opening["initial_posterior"] == BLENDED    # ... and where the controller actually starts
+    assert opening["lm_prior_top5"][0] == ["ก", 0.7]
+    assert (opening["target_char_idx"], opening["target_char"]) == (0, "ก")
+    assert opening["target_prior_prob"] == 0.7 and opening["target_prior_rank"] == 1
+
+    first, second = cap.of("flash_update")
+    assert (first["flash_idx"], first["t"], first["group"], first["score"], first["pi"]) == (0, 1, [0, 1], 1.5, 0.5)
+    assert first["leading_char"] == "ก"
+    assert first["max_prob"] == pytest.approx(0.5) and first["target_prob"] == pytest.approx(0.5)
+    assert (second["t"], second["group"], second["pi"]) == (2, [0], 0.25)
+    assert second["target_prob"] == pytest.approx(16 / 17, rel=1e-5)
+
+    (commit,) = cap.of("char_committed")
+    assert (commit["char"], commit["char_idx"], commit["reason"]) == ("ก", 0, ev.REASON_THRESHOLD_CROSSED)
+    assert commit["n_flashes_used"] == 2 and commit["committed_text"] == "ก"
+    assert commit["correct"] is True
+    assert commit["final_posterior"] == pytest.approx(P3, rel=1e-5)
+    # opening -> flashes -> commit, in that order
+    assert [r["event"] for r in cap.records] == ["trial_start", "flash_update", "flash_update", "char_committed"]
+
+
+def test_log_scores_a_wrong_commit_and_ranks_the_target_in_the_prior():
+    c = ScriptedController([(P3, True, 0)], reset_posterior=BLENDED, t_min=1)
+    engine, cap = make_logged_engine([c], [1.0], LM_PRIOR)
+    engine.on_marker({"event": "trial_start", "trial_id": 0, "target_char_idx": 1, "target_char": "ข"}, T0 + 1.5)
+    flash(engine, 0, 0, [0], T0 + 2.0)
+    Stream().feed_until(engine, T0 + 4.0)
+    (opening,) = cap.of("trial_start")
+    assert opening["target_char"] == "ข" and opening["target_prior_rank"] == 2   # only ก outranks it
+    (commit,) = cap.of("char_committed")
+    assert commit["char"] == "ก" and commit["target_char"] == "ข" and commit["correct"] is False
+
+
+@pytest.mark.parametrize("marker_target", [None, 99, -1, "ก", True, 1.5])
+def test_log_without_a_usable_target_is_unscored_and_decoding_is_unaffected(marker_target):
+    c = ScriptedController([(P3, True, 0)], reset_posterior=BLENDED, t_min=1)
+    engine, cap = make_logged_engine([c], [1.0], LM_PRIOR)
+    marker = {"event": "trial_start", "trial_id": 0}
+    if marker_target is not None:
+        marker["target_char_idx"] = marker_target
+    engine.on_marker(marker, T0 + 1.5)
+    flash(engine, 0, 0, [0], T0 + 2.0)
+    Stream().feed_until(engine, T0 + 4.0)
+    (opening,) = cap.of("trial_start")
+    assert opening["target_char_idx"] is None and "target_prior_prob" not in opening
+    (update,) = cap.of("flash_update")
+    assert update["target_prob"] is None
+    (commit,) = cap.of("char_committed")
+    assert commit["correct"] is None and commit["char"] == "ก"
+    assert engine.committed_text == "ก"
+
+
+def test_log_records_rejected_flashes_and_a_trial_end_commit():
+    c = ScriptedController([(P1, False, None)], reset_posterior=BLENDED, t_min=2)
+    engine, cap = make_logged_engine([c], [1.0], LM_PRIOR)
+    start(engine, 0, T0 + 1.5)
+    flash(engine, 0, 0, [0], T0 + 2.0)
+    Stream(flat_channel="Pz").feed_until(engine, T0 + 4.0)
+    (rejected,) = cap.of("flash_rejected")
+    assert (rejected["flash_idx"], rejected["reason"], rejected["channels"]) == (0, ev.REJECT_QUALITY_GATE, ["Pz"])
+
+    c2 = ScriptedController([(P1, False, None)], reset_posterior=BLENDED, t_min=2)
+    engine, cap = make_logged_engine([c2], [1.0], LM_PRIOR)
+    start(engine, 0, T0 + 1.5)
+    flash(engine, 0, 0, [0], T0 + 2.0)
+    end(engine, 0, T0 + 2.0 + SOA)
+    Stream().feed_until(engine, T0 + 5.0)
+    (commit,) = cap.of("char_committed")
+    assert commit["reason"] == ev.REASON_TRIAL_ENDED and commit["n_flashes_used"] == 1
+
+
+def test_log_records_survive_the_json_lines_formatter():
+    """What the service writes to disk: one valid JSON object per record, Thai text unescaped."""
+    c = ScriptedController([(P3, True, 0)], reset_posterior=BLENDED, t_min=1)
+    engine, cap = make_logged_engine([c], [1.0], LM_PRIOR)
+    start(engine, 0, T0 + 1.5)
+    flash(engine, 0, 0, [0], T0 + 2.0)
+    Stream().feed_until(engine, T0 + 4.0)
+    formatter = svc.JsonLinesFormatter()
+    lines = []
+    for fields in cap.records:
+        record = logging.LogRecord("p300.inference.engine", logging.INFO, __file__, 0, fields["event"], (), None)
+        record.fields = fields
+        lines.append(formatter.format(record))
+    assert [json.loads(line)["event"] for line in lines] == ["trial_start", "flash_update", "char_committed"]
+    assert "ก" in lines[-1]    # Thai text is written as text, not \u-escapes
+
+
+# ---------------------------------------------------------------------------
 # construction from a manifest
 # ---------------------------------------------------------------------------
 
@@ -523,6 +660,25 @@ def test_components_built_from_manifest(session):
     InferenceEngine(controller_factory=comps.controller_factory, language_model=comps.language_model,
                     scorer=comps.scorer, epoch_spec=comps.epoch_spec, gate_policy=comps.gate_policy,
                     characters=comps.characters, emit=lambda e: None)
+
+
+def test_service_config_record_pins_the_models_and_aligns_the_arrays(session):
+    comps = svc.load_service_components(session.path)
+    fields = svc.service_config_fields(comps, fingerprint=session.fingerprint, eeg_name="UnicornEEG",
+                                       channel_labels=list(EEG_CHANNELS), channel_count=8, srate=250.0)
+    assert fields["event"] == "service_config"
+    assert fields["manifest_fingerprint"] == session.fingerprint == mf.fingerprint_of(fields["manifest"])
+    assert fields["characters"] == comps.characters and len(fields["characters"]) == 72
+    assert fields["platt"] == {"a": 1.5, "b": -0.5}
+    assert fields["manifest"]["language_model"] == {"type": "uniform"}
+    assert fields["manifest"]["classifier"]["sha256"] == mf.sha256_file(comps.manifest.classifier_path)
+    assert fields["epoch_spec"] == SPEC.to_dict()
+    assert fields["eeg_stream"] == {"name": "UnicornEEG", "channel_count": 8,
+                                    "channel_labels": list(EEG_CHANNELS), "srate": 250.0}
+    json.dumps(fields, ensure_ascii=False)   # serializable as written to the log
+    unlabeled = svc.service_config_fields(comps, fingerprint=None, eeg_name="x", channel_labels=None,
+                                          channel_count=8, srate=250.0)
+    assert unlabeled["eeg_stream"]["channel_labels"] is None
 
 
 def test_eeg_inlet_flags_follow_the_dejitter_constant(session, monkeypatch):
@@ -637,9 +793,14 @@ def test_runner_over_real_lsl(session):
     markers = StreamOutlet(StreamInfo("MarkersTest", marker_type, 1, 0, "string", f"mk_{uuid.uuid4().hex}"))
     steps = [(_literal72(0.3), False, None), (_literal72(0.6), False, None), (_literal72(0.95), True, 0)]
     factory = Factory([ScriptedController(steps, reset_posterior=UNIFORM72)])
+    logger = logging.getLogger(f"test.{uuid.uuid4().hex}")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    capture = _FieldsCapture()
+    logger.addHandler(capture)
     runner = svc.ServiceRunner(session.path, eeg_type=eeg_type, marker_type=marker_type,
                                inference_type=inference_type, eeg_timeout=10,
-                               logger=logging.getLogger(f"test.{uuid.uuid4().hex}"), controller_factory=factory,
+                               logger=logger, controller_factory=factory,
                                consumer_wait_s=15, marker_probe_interval_s=0.2)
     thread, codes = _start_runner(runner)
     received = []
@@ -683,6 +844,23 @@ def test_runner_over_real_lsl(session):
     assert (committed["char_idx"], committed["n_flashes_used"]) == (0, 3)
     assert all(e["manifest_fingerprint"] == session.fingerprint for e in events if e["event"] == ev.SERVICE_STATUS)
     assert [round(e["max_prob"], 6) for e in events[2:5]] == [0.3, 0.6, 0.95]
+
+    # the experiment log, written by the real runner: config first, then the trial's records in order
+    (config,) = capture.of("service_config")
+    assert config["manifest_fingerprint"] == session.fingerprint
+    assert config["eeg_stream"]["channel_count"] == 8 and config["eeg_stream"]["srate"] == SFREQ
+    assert len(config["characters"]) == 72
+    (opening,) = capture.of("trial_start")
+    assert opening["lm_prior"] == [float(f"{1 / 72:.6g}")] * 72          # this manifest's LM is uniform
+    assert opening["initial_posterior"] == pytest.approx(UNIFORM72, rel=1e-5)
+    assert (opening["target_char_idx"], opening["target_prior_rank"]) == (0, 1)
+    experiment_events = {"service_config", "trial_start", "flash_update", "flash_rejected", "char_committed"}
+    kinds = [r["event"] for r in capture.records if r.get("event") in experiment_events]
+    assert kinds == ["service_config", "trial_start", "flash_update", "flash_update", "flash_update",
+                     "char_committed"]
+    assert all(isinstance(r["score"], float) and math.isfinite(r["score"]) for r in capture.of("flash_update"))
+    (committed_record,) = capture.of("char_committed")
+    assert committed_record["correct"] is True and committed_record["reason"] == ev.REASON_THRESHOLD_CROSSED
 
 
 def test_runner_heartbeat_generic_labels_and_eeg_silence(session):
@@ -813,7 +991,12 @@ def test_cli_subprocess_sigterm_exits_0(session, tmp_path):
         assert received[-1]["state"] == ev.STATE_STOPPED
         # liblsl writes its own connection logs to stderr; the service itself prints only on failure
         assert b"inference_service:" not in proc.stderr.read()
-        assert all(json.loads(line) for line in log.read_text(encoding="utf-8").splitlines())
+        records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert all(records)
+        # the real CLI writes the opening config record, pinning which models produced this log
+        (config,) = [r for r in records if r.get("event") == "service_config"]
+        assert config["manifest_fingerprint"] == session.fingerprint
+        assert config["eeg_stream"]["channel_count"] == 8 and len(config["characters"]) == 72
     finally:
         if proc.poll() is None:
             proc.kill()

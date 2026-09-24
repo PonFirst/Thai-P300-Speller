@@ -11,12 +11,14 @@ The code is the source of truth. This page says where each contract lives, what 
 | `session_manifest.json` | `pipeline/manifest.py` | `load_manifest()` in every process |
 | Quality levels and the quality gate | `pipeline/quality.py` | GUI scalp map and service gate share it |
 | Epoch cutting and preprocessing | `pipeline/epoching.py` | fit script and service share it |
+| Experiment logs: file names, session record, fit report | `pipeline/experiment_log.py` | GUI, fit script, `tests/test_experiment_log.py` |
 
 ## LSL streams
 
 | Stream | type | Format | Producer |
 |---|---|---|---|
-| `UnicornEEG` | `EEG` | 8 ch (`Fz C3 Cz C4 Pz PO7 Oz PO8`, `pipeline.constants.EEG_CHANNELS`), 250 Hz, float32, **µV** | Unicorn LSL Interface, on the deployment machine (`collection/README_ACQUISITION.md`), or `collection/mock_headset.py` (`MockUnicornEEG`) |
+| `UnicornEEG` | `EEG` | 8 ch (`Fz C3 Cz C4 Pz PO7 Oz PO8`, `pipeline.constants.EEG_CHANNELS`), 250 Hz, float32, **µV** | Unicorn LSL Interface on Windows, or `collection/unicorn_relay.py` on a Mac (`collection/README_ACQUISITION.md`); `collection/mock_headset.py` (`MockUnicornEEG`) and `tools/fake_unicorn_bt.py` through the relay (`MockUnicornEEG`) when the data is synthetic |
+| `UnicornAux` | `Aux` | 8 ch float64: battery %, accelerometer x y z (g), gyroscope x y z (deg/s), device sample counter; 250 Hz, same timestamps as the EEG | `collection/unicorn_relay.py` only (`MockUnicornAux` when synthetic). Kept apart so the EEG stream stays 8 channels |
 | `P300Markers` | `Markers` | 1 ch string, irregular, one JSON event per sample | `checkerboard_stimulus.py` (stamped at `win.flip()`), or the in-window board `collection/board_qt.py` (stamped at the repaint request; see Stimulus boards) |
 | `P300Inference` | `P300Inference` | 1 ch string, irregular, one JSON event per sample | `pipeline/inference_service.py` |
 
@@ -48,6 +50,15 @@ If the real Unicorn LSL Interface turns out to deliver non-monotonic timestamps 
 
 `collection/mock_headset.py` emits samples on a fixed grid `t0 + index / sfreq`. Its timestamps are strictly increasing, and it leaves a real gap after a stall.
 
+### Timestamps from the relay
+
+`collection/unicorn_relay.py` stamps each sample with `counter / 250 + offset`, where `offset` maps the headset's sample counter onto the LSL clock (`unicorn_protocol.CounterClock`). Bluetooth only adds delay, so `arrival - counter / 250` is at least the true offset and its minimum over a 15 s window estimates it; the offset is slew-limited to 200 ppm, so it can follow the headset's crystal drifting against the host clock while stamps stay strictly increasing. Effects:
+
+- Radio bursts do not show in the stamps (simulated: about 0.1 ms error against about 5 ms when stamping on arrival).
+- A dropped packet is a jump in the stamps of `(missing + 1) * 4 ms`, so the recorder's gap detection and epoch rejection see it exactly as before.
+- The constant part of the link delay remains, identical in calibration and live use. Only a photodiode measures it (TESTING.md H7, H14).
+- The channel labels come from `EEG_CHANNELS`, not from the headset, so the service's label check is vacuous for this producer.
+
 ### Why LSL for inference events, not in-process IPC
 
 The service and the GUI are separate OS processes. The GUI launches the service as a subprocess, just as it launches the recorder and the stimulus. LSL is already the project's transport, and it puts inference events on the same clock as EEG and markers, so a recording and its inference log can be aligned afterwards.
@@ -77,7 +88,7 @@ Validation is strict: unknown event types, missing keys, and extra keys are all 
 
 The schema and every guarantee are in the docstring of `pipeline/manifest.py`. In short:
 
-- It names the characters file, the classifier checkpoint, the Platt calibration file, the language model (`uniform`, or `ngram` plus a corpus), the stopping parameters, and the quality-gate policy.
+- It names the characters file, the classifier checkpoint, the Platt calibration file, the language model (`uniform`, `ngram` plus a corpus, or `transformer` plus a checkpoint), the stopping parameters, and the quality-gate policy.
 - Artifact sha256s are re-verified at load, and the calibration file must name the sha256 of the classifier it was fitted on.
 - The fingerprint is the sha256 of the canonical JSON, so equal fingerprints mean byte-identical models.
 - Nothing hardcodes a model path.
@@ -112,6 +123,33 @@ joblib is pickle, so loading one runs code. Only load checkpoints you created. T
 Platt scaling is fitted on **out-of-fold** decision scores (grouped by `trial_id`), never on scores from a model that saw the same epochs. In-sample scores are overconfident and would inflate every log-likelihood ratio.
 
 **Demo safety:** a recording named `demo_*` is refused unless `--allow-demo` is passed. With it, the checkpoint, calibration, and default manifest are all `demo_`-prefixed. Existing artifacts are never overwritten without `--force`.
+
+## Experiment logs
+
+Every session leaves a record of what was spelled, how the classifier was trained, and how each character was decoded. All files hang off the recording CSV's path (the recorder's own sidecar convention); `pipeline/experiment_log.py` defines the names and schemas, and nothing else spells them.
+
+| File | Written by | Contains |
+|---|---|---|
+| `<csv>.session.json` | the panel (`gui_logic.SessionLogger`) | **Calibration characters:** `targets_text` (exactly what was typed) and `target_sequence` (one entry per trial: order, character, matrix index). Also `kind`, settings, manifest path and fingerprint, start and end time, how far the session got (`end.phase_at_end`), and the paths of the other files. |
+| `<csv>.log.jsonl`, `<csv>.integrity.json` | the recorder | **Calibration process:** connection, gaps, warnings, and the exit summary (see the recorder docstring). |
+| `models/<id>_fit_report.json` | `pipeline/fit_from_recording.py` | **Classifier training:** recording sha256 and counts, the embedded `<csv>.session.json` (the calibration sentence), epochs used and rejected, per-fold and out-of-fold AUC, Platt `a`/`b`/ECE, artifact hashes, manifest fingerprint, LM config, library versions, and every console line. |
+| `<csv>.inference.log.jsonl` | the inference service (`--log-file`, set by the panel) | **Inference, per character** (records below). |
+
+`kind` is derived: a session that ran with live inference is `inference`, one that only recorded is `calibration`. A recording made before session records existed, or moved away from its sidecars, has no session file; the fit report then says `"calibration_session": null`.
+
+Inference log records, one JSON object per line, keyed by `event` (the `time`, `level`, `logger`, `message` keys are the formatter's). Every 72-long array is aligned to `service_config.characters`, and probabilities are rounded to 6 significant digits.
+
+| `event` | when | fields |
+|---|---|---|
+| `service_config` | once, at startup | full manifest (every artifact sha256), `characters`, Platt `a`/`b`, `epoch_spec`, EEG stream name, channel labels and rate |
+| `trial_start` | each character, before its first flash | `trial_id`, `context` (text committed so far), **`lm_prior`** (the language model's distribution as produced), `initial_posterior` (what the controller starts from: the prior blended with the uniform floor), `lm_prior_top5`, and, when the stimulus cued a target, `target_char_idx`, `target_char`, `target_prior_prob`, `target_prior_rank` |
+| `flash_update` | each accepted flash | `trial_id`, `flash_idx`, `t`, `group`, classifier `score`, `pi`, `max_prob`, `leading_char`, `target_prob` |
+| `flash_rejected` | each rejected flash | `trial_id`, `flash_idx`, `reason`, `channels` |
+| `char_committed` | each decision | `char`, `reason`, `n_flashes_used`, `final_posterior`, `committed_text`, `correct` |
+
+The target fields are **log-only**: the service reads `target_char_idx` from the `trial_start` marker so a commit can be scored (`correct`), and decoding never uses it. They are `null` when the marker carries none.
+
+`lm_prior` is the model's output, not the controller's starting point: with the default `lam = 0.7`, a 99% LM prior starts the posterior at about 0.70. `initial_posterior` is logged next to it so the effect of the blend is visible.
 
 ## Channel labels
 

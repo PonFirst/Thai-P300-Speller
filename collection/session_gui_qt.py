@@ -679,7 +679,9 @@ class SessionWindow(QMainWindow):
             service_args += ["--eeg-type", eeg_type]
         if inference_type != INFERENCE_STREAM_TYPE:
             service_args += ["--inference-type", inference_type]
-        options = {"service_extra_args": service_args, **(orchestrator_options or {})}
+        options = {"service_extra_args": service_args,
+                   "session_log": gl.SessionLogger(demo=demo, characters=self.characters),
+                   **(orchestrator_options or {})}
         self.orchestrator = gl.SessionOrchestrator(
             launcher or popen_launcher, clock, self._on_session_message, **options)
 

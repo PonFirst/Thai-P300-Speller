@@ -52,6 +52,12 @@ service checks what comes out (the posterior must be finite and sum to 1, and
 a stop must satisfy one of the two stopping conditions) but never recomputes
 it.
 
+Experiment log: besides the operational messages, the --log-file carries one structured
+record per event (service_config, then per character trial_start with the LM prior,
+flash_update per flash, flash_rejected, char_committed). Schema in docs/INTERFACES.md and
+pipeline/experiment_log.py. The cued target, when the stimulus announces one, is read only to
+score commits in the log; decoding never uses it.
+
 Timing: flashes are processed in timestamp order, each once its epoch window
 (tmax + padding after onset) is in the buffer. A trial_end waits behind its
 trial's queued flashes, because it arrives before the last ~1.3 s of epochs
@@ -86,6 +92,7 @@ from pipeline.classifier_io import (CheckpointMismatchError, channels_for_compat
 from pipeline.constants import (EEG_INLET_DEJITTER, EEG_STREAM_TYPE, INFERENCE_FINGERPRINT_KEY,
                                 INFERENCE_STREAM_NAME, INFERENCE_STREAM_TYPE, MARKER_STREAM_TYPE)
 from pipeline.epoching import NOT_YET_AVAILABLE, EpochSpec, extract_epoch
+from pipeline.experiment_log import sig_floats
 from pipeline.language_model import build_language_model, validate_prior
 from pipeline.manifest import (load_calibration_file, load_characters_file, load_manifest,
                                short_fingerprint)
@@ -145,6 +152,9 @@ class _Marker:
     flash_idx: int | None = None
     group: tuple = ()
     admitted: bool = False
+    # trial_start only. Log-only: the stimulus announces the cued target so the experiment log
+    # can score each commit. Decoding never reads it.
+    target_char_idx: int | None = None
 
     @property
     def trial_key(self):
@@ -159,6 +169,7 @@ class _Trial:
     committed: bool = False
     failed: bool = False
     warned_bad_channels: bool = False
+    target_char_idx: int | None = None  # log-only, see _Marker
 
     @property
     def trial_id(self) -> int:
@@ -291,7 +302,10 @@ class InferenceEngine:
             self._warn(f"malformed {kind} marker ignored (trial_id {trial_id!r}, timestamp {timestamp!r})")
             return None
         if kind != "flash":
-            return _Marker(kind, self._generation, trial_id, ts)
+            target = event.get("target_char_idx") if kind == "trial_start" else None
+            if not (_is_nonneg_int(target) and target < self.n_chars):
+                target = None  # optional and log-only: absent or malformed just means "unscored"
+            return _Marker(kind, self._generation, trial_id, ts, target_char_idx=target)
         flash_idx, group = event.get("flash_idx"), event.get("group")
         valid_group = (isinstance(group, list) and len(group) > 0 and len(set(group)) == len(group)
                        and all(_is_nonneg_int(g) and g < self.n_chars for g in group))
@@ -330,7 +344,7 @@ class InferenceEngine:
                 self._resolve_flash(marker, epoch, reason)
             elif marker.kind == "trial_start":
                 self._queue.pop(0)
-                self._start_trial(marker.trial_key, flash_idx=None)
+                self._start_trial(marker.trial_key, flash_idx=None, target_char_idx=marker.target_char_idx)
             else:
                 self._queue.pop(0)
                 self._end_trial(marker.trial_key)
@@ -353,7 +367,8 @@ class InferenceEngine:
         trial.flash_idxs.add(marker.flash_idx)
         return not (trial.committed or trial.failed)
 
-    def _start_trial(self, key: tuple, flash_idx: int | None) -> _Trial | None:
+    def _start_trial(self, key: tuple, flash_idx: int | None,
+                     target_char_idx: int | None = None) -> _Trial | None:
         current = self._trial
         if current is not None:
             if current.key == key:
@@ -365,14 +380,42 @@ class InferenceEngine:
             return None
         prior = validate_prior(self.language_model.get_prior(self.committed_text), self.n_chars,
                                source="language model")
-        trial = _Trial(key=key, controller=self.controller_factory())
+        trial = _Trial(key=key, controller=self.controller_factory(), target_char_idx=target_char_idx)
         self._trial = trial
         self._call_controller(trial, "reset", prior, flash_idx=flash_idx)
-        ok, _ = self._posterior_ok(trial, flash_idx, after="reset")
+        ok, initial_posterior = self._posterior_ok(trial, flash_idx, after="reset")
         if not ok:
             trial.failed = True
         self.log.info("trial %s started (context %r)", key[1], self.committed_text)
+        if ok:
+            self._log_trial_start(trial, prior, initial_posterior)
         return trial
+
+    def _target_fields(self, trial: _Trial) -> dict:
+        target = trial.target_char_idx
+        return {"target_char_idx": target,
+                "target_char": self.characters[target] if target is not None else None}
+
+    def _log_trial_start(self, trial: _Trial, prior, initial_posterior) -> None:
+        """
+        The experiment log's per-character opening record: the LM's distribution as the model
+        produced it (`lm_prior`, aligned to the characters in the service_config record), and
+        the posterior the controller actually starts from (`initial_posterior`, the prior blended
+        with the uniform floor), so the effect of the blend is visible in the log.
+        """
+        prior = np.asarray(prior, dtype=float)
+        top = np.argsort(prior)[::-1][:5]
+        fields = {
+            "event": "trial_start", "trial_id": trial.trial_id, "context": self.committed_text,
+            "lm_prior": sig_floats(prior), "initial_posterior": sig_floats(initial_posterior),
+            "lm_prior_top5": [[self.characters[int(i)], float(f"{prior[i]:.6g}")] for i in top],
+            **self._target_fields(trial),
+        }
+        target = trial.target_char_idx
+        if target is not None:
+            fields["target_prior_prob"] = float(f"{prior[target]:.6g}")
+            fields["target_prior_rank"] = int(np.sum(prior > prior[target])) + 1
+        self.log.info("trial_start", extra={"fields": fields})
 
     def _close_without_end(self, trial: _Trial, why: str) -> None:
         self._trial = None
@@ -432,6 +475,7 @@ class InferenceEngine:
             return
         self.stats["flashes_accepted"] += 1
         max_prob = min(1.0, float(posterior.max()))
+        self._log_flash_update(trial, idx, marker.group, score, posterior, max_prob)
         self._emit(ev.posterior_update(tid, idx, max_prob, int(posterior.argmax()), controller.theta,
                                        characters=self.characters))
         if not stop:
@@ -493,6 +537,21 @@ class InferenceEngine:
                     "stopped processing this trial, nothing committed")
         return False, None
 
+    def _log_flash_update(self, trial: _Trial, flash_idx: int, group, score: float, posterior,
+                          max_prob: float) -> None:
+        """One record per accepted flash: what the classifier said and where the posterior went."""
+        lead = int(posterior.argmax())
+        fields = {
+            "event": "flash_update", "trial_id": trial.trial_id, "flash_idx": flash_idx,
+            "t": trial.controller.t, "group": list(group), "score": score,
+            "pi": len(group) / self.n_chars, "max_prob": max_prob,
+            "leading_char_idx": lead, "leading_char": self.characters[lead],
+            "target_char_idx": trial.target_char_idx,
+            "target_prob": (float(f"{posterior[trial.target_char_idx]:.6g}")
+                            if trial.target_char_idx is not None else None),
+        }
+        self.log.info("flash_update", extra={"fields": fields})
+
     def _commit(self, trial: _Trial, char_idx: int, reason: str) -> None:
         char = self.characters[char_idx]
         self._emit(ev.character_committed(trial.trial_id, char_idx, char, trial.controller.t, reason,
@@ -501,6 +560,20 @@ class InferenceEngine:
         self.committed_text += char
         self.committed_indices.append(char_idx)
         self.stats["characters_committed"] += 1
+        self._log_commit(trial, char_idx, char, reason)
+
+    def _log_commit(self, trial: _Trial, char_idx: int, char: str, reason: str) -> None:
+        """The per-character closing record: the decision, why, and the final posterior."""
+        posterior = np.exp(np.asarray(trial.controller.log_p, dtype=float))
+        target = trial.target_char_idx
+        fields = {
+            "event": "char_committed", "trial_id": trial.trial_id, "char_idx": char_idx, "char": char,
+            "reason": reason, "n_flashes_used": trial.controller.t,
+            "max_prob": min(1.0, float(posterior.max())), "final_posterior": sig_floats(posterior),
+            "committed_text": self.committed_text, **self._target_fields(trial),
+            "correct": (char_idx == target) if target is not None else None,
+        }
+        self.log.info("char_committed", extra={"fields": fields})
 
     # -- output ---------------------------------------------------------------
 
@@ -509,6 +582,9 @@ class InferenceEngine:
 
     def _reject(self, trial_id, flash_idx, reason, channels) -> None:
         self.stats["flashes_rejected"] += 1
+        self.log.info("flash_rejected", extra={"fields": {
+            "event": "flash_rejected", "trial_id": trial_id, "flash_idx": flash_idx,
+            "reason": reason, "channels": list(channels)}})
         self._emit(ev.flash_rejected(trial_id, flash_idx, reason, channels))
 
     def _warn(self, detail: str) -> None:
@@ -569,6 +645,27 @@ class ServiceComponents:
     @property
     def gate_policy(self) -> str:
         return self.manifest.gate_policy
+
+
+def service_config_fields(comps: ServiceComponents, *, fingerprint: str | None, eeg_name: str,
+                          channel_labels, channel_count: int, srate: float) -> dict:
+    """
+    The experiment log's opening record. Every 72-long array in the later records is aligned to
+    `characters` here, so a log file is readable on its own. The manifest embeds each artifact's
+    sha256 (classifier, calibration, LM), so this pins exactly which models produced the log.
+    """
+    return {
+        "event": "service_config",
+        "manifest_path": str(comps.manifest.path),
+        "manifest_fingerprint": fingerprint,
+        "manifest": comps.manifest.data,
+        "characters": list(comps.characters),
+        "platt": {"a": comps.calibration["a"], "b": comps.calibration["b"]},
+        "epoch_spec": comps.epoch_spec.to_dict(),
+        "eeg_stream": {"name": eeg_name, "channel_count": channel_count,
+                       "channel_labels": list(channel_labels) if channel_labels else None,
+                       "srate": srate},
+    }
 
 
 def load_service_components(manifest_path) -> ServiceComponents:
@@ -802,6 +899,10 @@ class ServiceRunner:
             scorer=comps.scorer, epoch_spec=comps.epoch_spec, gate_policy=comps.gate_policy,
             characters=comps.characters, emit=self._emit, fingerprint=self._fingerprint,
             logger=self.log.getChild("engine"))
+        self.log.info("service_config", extra={"fields": service_config_fields(
+            comps, fingerprint=self._fingerprint, eeg_name=eeg_info.name(),
+            channel_labels=eeg_info.get_channel_labels(), channel_count=eeg_info.channel_count(),
+            srate=eeg_info.nominal_srate())})
         eeg_inlet.open_stream(timeout=5.0)
         ready_detail = (f"EEG {eeg_info.name()!r} connected ({eeg_info.channel_count()} ch @ "
                         f"{eeg_info.nominal_srate():g} Hz); gate {comps.gate_policy}; "

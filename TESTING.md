@@ -192,6 +192,8 @@ Thresholds are unchanged: green 1–200 µV peak-to-peak, yellow 200–400 µV, 
 | Timestamps are recorded as delivered; one dejitter switch for recorder and service | `test_record_session.py::test_non_monotonic_timestamps_flagged_not_reordered_or_dropped`, `::test_inlet_processing_flags_follow_shared_dejitter_switch`; `test_inference_service.py::test_eeg_inlet_flags_follow_the_dejitter_constant`; `test_mock_headset_timing.py` |
 | Training and serving cut identical epochs | `test_epoching.py::test_live_buffer_and_full_recording_give_identical_epochs` |
 | Checkpoint/stream compatibility and channel-label policy | `test_classifier_io.py::test_incompatible_stream_names_the_field`, `::test_channel_label_policy`; `test_inference_service.py::test_runner_exits_2_on_montage_mismatch`, `::test_runner_heartbeat_generic_labels_and_eeg_silence` |
+| The Unicorn Bluetooth payload decodes to g.tec's own worked example (3654.87 uV on CH1, counter 176), including negative EEG values and the counter's byte order | `test_unicorn_protocol.py::test_example_is_45_bytes_and_matches_the_documents_converted_values`, `::test_negative_eeg_values_are_sign_extended`, `::test_counter_uses_all_four_bytes_little_endian` |
+| The relay recovers from garbage, counts lost packets from the device counter, stamps from the counter (not arrival), and names synthetic data as such | `test_unicorn_protocol.py` (framer, tracker, clock); `test_unicorn_relay.py` (over real LSL, a pseudo-terminal, and the real recorder) |
 | Calibration never uses in-sample scores | `test_fit_from_recording.py::test_out_of_fold_scores_never_score_a_trial_the_model_saw` |
 | Thai tone marks stack correctly in the GUI font | `test_gui_qt_smoke.py::test_thai_tone_mark_stacks_above_its_base` |
 
@@ -235,7 +237,7 @@ EOF
 
 1. **Demo launch.** Run `./start_speller.sh --demo`.
    - A yellow "DEMO MODE — synthetic data" banner, and "[DEMO]" in the title.
-   - The status goes from red "● No EEG stream — start Unicorn LSL Interface" to green "● EEG connected".
+   - The status goes from red "● No EEG stream — start the Unicorn LSL Interface (Windows) or unicorn_relay.py (Mac)" to green "● EEG connected".
    - The manifest note names `<repo>/demo_session_manifest.json`, or says it is missing with a `--allow-demo` hint. (V)
 2. **Real-mode default.** Run `$PY collection/session_gui_qt.py`. The note names `session_manifest.json`, never the demo manifest. (V)
 3. **Traces.** Top to bottom: Fz, C3, Cz, C4, Pz, PO7, Oz, PO8, over a 0–4 s axis, all visible at a similar height. (V)
@@ -301,6 +303,9 @@ go/no-go.
 - **H9. First-trial label.** After a real session, `trials_without_trial_start` in the integrity summary should be 0. A non-zero count means no consumer subscribed within the stimulus's 15 s + 2 s wait; check the recorder log for when the marker stream connected.
 - **H10. Live inference end to end** (once `reset`/`llr`/`update` are implemented): record a calibration session, then run `pipeline.fit_from_recording`. Then do a live session with Live inference on, and compare the composed text with the cued targets.
 - **H11. Sustained load.** Run a 10-minute live session. `posterior_update` should keep lagging each flash by only about 1.3 s, without growing.
+- **H12. Mac relay: sample-counter gap test (do this first).** With the headset paired: `python collection/unicorn_relay.py --duration 1800 --report logs/gap_test.json`, walking around normally, Wi-Fi on. Read `samples.missing`, `loss_pct`, `n_gaps`, `longest_gap_ms` and `delivery_delay_ms`. Repeat with Wi-Fi off. Any loss on the built-in radio means trying a different position, then a dongle through Bumble (`--tcp`). Pass/fail thresholds are yours to set; the report gives the numbers.
+- **H13. Mac relay: montage and units on the live stream.** The relay writes the channel labels itself, so the service's label check proves nothing here. Confirm physically that channels 1-8 are Fz C3 Cz C4 Pz PO7 Oz PO8: a blink is largest at Fz (and visible at PO8), alpha with eyes closed is largest at Oz, jaw clench shows at C3/C4. Then repeat H3 (units, 1-200 uV peak-to-peak) and H4 (timestamps: the recorder's integrity summary should show no non-monotonic steps) on the relay's stream.
+- **H14. Mac relay: end-to-end timing.** Repeat H7 with the relay in the path. It measures the constant delay the relay cannot (radio plus headset firmware) and confirms it is stable across sessions; if it drifts between sessions, calibrate and run live in the same session.
 
 ## Known limitations (not done this round)
 

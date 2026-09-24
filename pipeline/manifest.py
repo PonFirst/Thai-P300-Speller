@@ -14,11 +14,14 @@ Schema version 1:
       "quality_gate": {"policy": "skip"}
     }
 
-language_model is {"type": "uniform"} or
+language_model is {"type": "uniform"}, or
     {"type": "ngram", "corpus": {"path": ..., "sha256": ...},
-     "order": 4, "alpha": 0.1, "backoff_weight": 0.4}
-"uniform" is a declared choice, not a fallback -- the repo has no Thai corpus
-yet. A Transformer LM will be a new type added here.
+     "order": 4, "alpha": 0.1, "backoff_weight": 0.4}, or
+    {"type": "transformer", "checkpoint": {"path": ..., "sha256": ...}}
+"uniform" is a declared choice, not a fallback. "transformer" loads a
+stopping/gpt_dev.ipynb checkpoint via stopping.transformer_lm.ThaiTransformerLM
+(pipeline/language_model.py's _build_transformer) -- its architecture
+hyperparameters travel inside the checkpoint itself, not duplicated here.
 
 Enforced at load time:
   - relative paths resolve against the manifest's directory, not the cwd;
@@ -53,7 +56,7 @@ SCHEMA_VERSION = 1
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST_PATH = REPO_ROOT / "session_manifest.json"
 
-LM_TYPES = ("uniform", "ngram")
+LM_TYPES = ("uniform", "ngram", "transformer")
 CALIBRATION_FORMAT = "p300-platt-v1"
 SCORE_METHOD = "decision_function"
 
@@ -153,13 +156,16 @@ def validate_manifest_dict(data: Any) -> None:
         _fail("manifest.language_model.type", f"must be one of {list(LM_TYPES)}, got {lm.get('type')!r}")
     if lm["type"] == "uniform":
         _exact_keys(lm, {"type"}, "manifest.language_model")
-    else:
+    elif lm["type"] == "ngram":
         _exact_keys(lm, {"type", "corpus", *DEFAULT_NGRAM}, "manifest.language_model")
         _artifact(lm["corpus"], "manifest.language_model.corpus")
         _number(lm["order"], "manifest.language_model.order", lo=1, integer=True)
         _number(lm["alpha"], "manifest.language_model.alpha", lo=0, lo_open=True)
         _number(lm["backoff_weight"], "manifest.language_model.backoff_weight",
                 lo=0, lo_open=True, hi=1)
+    else:
+        _exact_keys(lm, {"type", "checkpoint"}, "manifest.language_model")
+        _artifact(lm["checkpoint"], "manifest.language_model.checkpoint")
 
     st = data["stopping"]
     _exact_keys(st, set(DEFAULT_STOPPING), "manifest.stopping")
@@ -252,6 +258,11 @@ class SessionManifest:
         return self.resolve(lm["corpus"]["path"]) if lm["type"] == "ngram" else None
 
     @property
+    def transformer_checkpoint_path(self) -> Path | None:
+        lm = self.data["language_model"]
+        return self.resolve(lm["checkpoint"]["path"]) if lm["type"] == "transformer" else None
+
+    @property
     def stopping(self) -> dict:
         return dict(self.data["stopping"])
 
@@ -266,8 +277,11 @@ class SessionManifest:
 
 def verify_artifacts(manifest: SessionManifest) -> None:
     entries = [(key, manifest.data[key]) for key in ("characters", "classifier", "calibration")]
-    if manifest.data["language_model"]["type"] == "ngram":
+    lm_type = manifest.data["language_model"]["type"]
+    if lm_type == "ngram":
         entries.append(("language_model.corpus", manifest.data["language_model"]["corpus"]))
+    elif lm_type == "transformer":
+        entries.append(("language_model.checkpoint", manifest.data["language_model"]["checkpoint"]))
 
     for label, entry in entries:
         resolved = manifest.resolve(entry["path"])
@@ -328,6 +342,11 @@ def build_manifest_dict(*, base_dir, characters_path, classifier_path, calibrati
         if corpus_path is None:
             raise ManifestError("manifest.language_model: type 'ngram' requires corpus_path")
         lm = {**DEFAULT_NGRAM, **lm, "corpus": artifact_entry(corpus_path, base_dir)}
+    elif lm.get("type") == "transformer":
+        checkpoint_path = lm.pop("checkpoint_path", None)
+        if checkpoint_path is None:
+            raise ManifestError("manifest.language_model: type 'transformer' requires checkpoint_path")
+        lm = {"type": "transformer", "checkpoint": artifact_entry(checkpoint_path, base_dir)}
 
     data = {
         "schema_version": SCHEMA_VERSION,

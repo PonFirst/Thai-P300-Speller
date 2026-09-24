@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from pipeline import experiment_log as xlog
 from pipeline import fit_from_recording as ffr
 from pipeline import manifest as mf
 from pipeline.classifier_io import load_checkpoint
@@ -227,7 +228,8 @@ def test_demo_with_flag_prefixes_everything_and_refuses_overwrite(recording, tmp
     manifest = mf.load_manifest(man)
     assert manifest.lm_config == {"type": "uniform"}
     assert manifest.fingerprint in out
-    assert sorted(p.name for p in models.iterdir()) == ["demo_s1_classifier.joblib", "demo_s1_platt.json"]
+    assert sorted(p.name for p in models.iterdir()) == [
+        "demo_s1_classifier.joblib", "demo_s1_fit_report.json", "demo_s1_platt.json"]
     assert list(cwd.iterdir()) == [] and list(fake_root.iterdir()) == []
 
     before = {p: p.stat().st_mtime_ns for p in (ckpt, cal, man)}
@@ -239,6 +241,64 @@ def test_demo_with_flag_prefixes_everything_and_refuses_overwrite(recording, tmp
     assert ffr.main([*argv, "--n-splits", "1", "--force"]) == 2
     assert "--n-splits" in capsys.readouterr().err
     assert list(fake_root.iterdir()) == []
+
+
+def _fit_demo(recording, tmp_path, monkeypatch, *, session_targets=None):
+    demo = tmp_path / "demo_subject_001.csv"
+    demo.write_bytes(recording.read_bytes())
+    if session_targets is not None:
+        xlog.write_json_atomic({"format": xlog.SESSION_FORMAT, "targets_text": session_targets},
+                               xlog.session_record_path(demo))
+    outputs, models, man, _, _ = _isolate(tmp_path, monkeypatch)
+    assert ffr.main(["--recording", str(demo), "--id", "s1", "--allow-demo", *outputs,
+                     "--n-splits", "3"]) == 0
+    return demo, models, man
+
+
+def test_fit_report_records_the_training_run(recording, tmp_path, monkeypatch, capsys):
+    demo, models, man = _fit_demo(recording, tmp_path, monkeypatch, session_targets="กขค")
+    out = capsys.readouterr().out
+    report_path = xlog.fit_report_path(models / "demo_s1_classifier.joblib")
+    assert report_path == models / "demo_s1_fit_report.json" and str(report_path) in out
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert report["format"] == xlog.FIT_REPORT_FORMAT
+    assert report["subject_id"] == "s1" and report["demo"] is True
+    assert report["recording"]["sha256"] == mf.sha256_file(demo)
+    # the calibration sentence recorded at session start travels into the training log
+    assert report["calibration_session"]["targets_text"] == "กขค"
+
+    cv = report["cross_validation"]
+    assert cv["n_splits"] == 3 and len(cv["folds"]) == 3
+    assert sum(f["n_test_epochs"] for f in cv["folds"]) == report["epochs"]["n_used"]
+    assert 0.0 <= cv["out_of_fold_auc"] <= 1.0
+
+    cal = json.loads((models / "demo_s1_platt.json").read_text(encoding="utf-8"))
+    assert (report["platt"]["a"], report["platt"]["b"]) == (cal["a"], cal["b"])
+    manifest = mf.load_manifest(man)
+    assert report["artifacts"]["classifier"]["sha256"] == mf.sha256_file(models / "demo_s1_classifier.joblib")
+    assert report["artifacts"]["manifest"]["fingerprint"] == manifest.fingerprint
+    assert report["language_model"] == {"type": "uniform"}
+    assert any("out-of-fold AUC" in line for line in report["console"])
+
+
+def test_fit_report_without_a_session_record_says_so(recording, tmp_path, monkeypatch):
+    _, models, _ = _fit_demo(recording, tmp_path, monkeypatch)
+    report = json.loads((models / "demo_s1_fit_report.json").read_text(encoding="utf-8"))
+    assert report["calibration_session"] is None
+
+
+def test_out_of_fold_scores_fills_fold_log(recording):
+    rec = ffr.load_recording(recording)
+    X, kept, _ = ffr.extract_epochs(rec.timestamps, rec.data, [f.onset for f in rec.flashes], ffr.EpochSpec())
+    flashes = [f for f, k in zip(rec.flashes, kept) if k]
+    y = np.array([int(f.is_target) for f in flashes])
+    groups = np.array([f.trial_id for f in flashes])
+    folds = []
+    oof = ffr.out_of_fold_scores(X, y, groups, 3, ffr.load_build_pipeline(), folds)
+    assert np.all(np.isfinite(oof)) and [f["fold"] for f in folds] == [0, 1, 2]
+    assert sum(f["n_test_epochs"] for f in folds) == len(y)
+    assert all(f["n_train_epochs"] + f["n_test_epochs"] == len(y) for f in folds)
 
 
 def test_too_little_data_refused(tmp_path):

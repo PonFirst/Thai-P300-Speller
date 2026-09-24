@@ -1,0 +1,74 @@
+{
+  "cue_duration_ms": 2000,
+  "models": {
+    "old_transformer": {
+      "label": "Old transformer (first pass)",
+      "n_params": 878867,
+      "vocab_size": 275,
+      "config": {
+        "block_size": 128,
+        "n_embd": 128,
+        "n_head": 4,
+        "n_layer": 4,
+        "dropout": 0.1,
+        "vocab_size": 275
+      },
+      "load_time_s": 0.00977124999917578,
+      "top1_accuracy": 0.6875,
+      "top3_accuracy": 0.9375,
+      "mean_prob_correct": 0.6385198463441296,
+      "mean_surprisal_bits": 1.1777580586742413,
+      "latency_ms": {
+        "mean_ms": 2.0254020997526823,
+        "median_ms": 2.04597899937653,
+        "max_ms": 2.1101669990457594,
+        "p95_ms": 2.0805583480978385
+      }
+    },
+    "new_transformer": {
+      "label": "New transformer (full corpus)",
+      "n_params": 5602941,
+      "vocab_size": 1661,
+      "config": {
+        "block_size": 64,
+        "n_embd": 256,
+        "n_head": 8,
+        "n_layer": 6,
+        "dropout": 0.1,
+        "vocab_size": 1661
+      },
+      "load_time_s": 0.04561062499851687,
+      "top1_accuracy": 0.8125,
+      "top3_accuracy": 1.0,
+      "mean_prob_correct": 0.776033434219281,
+      "mean_surprisal_bits": 0.6325613887877095,
+      "latency_ms": {
+        "mean_ms": 6.70157714994275,
+        "median_ms": 6.706561998726102,
+        "max_ms": 7.488249997550156,
+        "p95_ms": 6.990292300906731
+      }
+    },
+    "ngram": {
+      "label": "N-gram (order=4, currently wired into the real pipeline)",
+      "n_params": null,
+      "n_context_entries": 125665,
+      "config": {
+        "order": 4,
+        "alpha": 0.1,
+        "backoff_weight": 0.4
+      },
+      "load_time_s": 15.838983000001463,
+      "top1_accuracy": 0.75,
+      "top3_accuracy": 1.0,
+      "mean_prob_correct": 0.6300693476570238,
+      "mean_surprisal_bits": 0.955120477161809,
+      "latency_ms": {
+        "mean_ms": 0.007647949678357691,
+        "median_ms": 0.007624999852851033,
+        "max_ms": 0.008041999535635114,
+        "p95_ms": 0.0080021025496535
+      }
+    }
+  }
+}

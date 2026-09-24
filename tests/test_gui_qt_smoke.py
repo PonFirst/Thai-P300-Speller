@@ -35,6 +35,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 import gui_logic as gl  # noqa: E402
 import session_gui_qt as sgq  # noqa: E402
 from pipeline import events as ev  # noqa: E402
+from pipeline import experiment_log as xlog  # noqa: E402
 from pipeline.constants import EEG_CHANNELS, EEG_SFREQ  # noqa: E402
 from pipeline.manifest import ManifestError, load_characters_file  # noqa: E402
 
@@ -188,7 +189,7 @@ def _commit(trial, char, reason=ev.REASON_THRESHOLD_CROSSED, n=12):
 def test_start_disabled_while_searching_or_lost(rig):
     w = rig.window
     w.targets_edit.setText("กข")
-    assert w.status_label.text() == "● No EEG stream — start Unicorn LSL Interface"
+    assert w.status_label.text() == "● No EEG stream — start the Unicorn LSL Interface (Windows) or unicorn_relay.py (Mac)"
     assert not w.start_button.isEnabled() and not w.stop_button.isEnabled()
     QTest.keyClick(w.targets_edit, Qt.Key.Key_Return)
     assert rig.launched == {} and "No EEG stream" in w.session_label.text()
@@ -341,8 +342,11 @@ def test_enter_launches_inference_then_recorder_then_stimulus_and_stop_terminate
     w.targets_edit.setText("กข")
     QTest.keyClick(w.targets_edit, Qt.Key.Key_Return)
     assert rig.order == ["service"]
-    assert rig.launched["service"].cmd[1:] == ["-m", "pipeline.inference_service", "--manifest",
-                                                str(w.manifest.path)]
+    service_cmd = rig.launched["service"].cmd
+    assert service_cmd[1:6] == ["-m", "pipeline.inference_service", "--manifest", str(w.manifest.path),
+                                "--log-file"] and len(service_cmd) == 7
+    # the session's inference log sits next to its recording
+    assert Path(service_cmd[6]).name == "subject_001_20260911_093000.csv.inference.log.jsonl"
     assert not w.start_button.isEnabled() and w.stop_button.isEnabled()
 
     w.on_inference_stream_found(FP, "P300Inference")
@@ -368,6 +372,12 @@ def test_enter_launches_inference_then_recorder_then_stimulus_and_stop_terminate
     assert w.session_label.text() == "Stopped."
     w.refresh()
     assert w.start_button.isEnabled() and not w.stop_button.isEnabled()
+
+    # the panel wrote the session record: what was typed, how the session ended
+    assert service_cmd[6] == str(xlog.inference_log_path(out))
+    record = json.loads(xlog.session_record_path(out).read_text(encoding="utf-8"))
+    assert record["kind"] == xlog.KIND_INFERENCE and record["targets_text"] == "กข"
+    assert record["end"] == {"message": "Stopped.", "level": "info", "phase_at_end": gl.RUNNING}
 
 
 def test_service_not_implemented_exit_is_explained(rig):

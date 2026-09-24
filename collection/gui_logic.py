@@ -19,7 +19,7 @@ import os
 import re
 import sys
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
@@ -32,10 +32,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pipeline import events as ev  # noqa: E402
+from pipeline import experiment_log as xlog  # noqa: E402
 from pipeline import quality  # noqa: E402
 from pipeline.constants import EEG_CHANNELS, EEG_SFREQ  # noqa: E402
 from pipeline.manifest import (  # noqa: E402
-    DEFAULT_MANIFEST_PATH, ManifestError, ManifestMismatchError, assert_same_fingerprint, short_fingerprint,
+    DEFAULT_MANIFEST_PATH, ManifestError, ManifestMismatchError, assert_same_fingerprint, load_manifest,
+    short_fingerprint,
 )
 
 CHARACTERS_PATH = COLLECTION_DIR / "characters_th.json"
@@ -362,7 +364,7 @@ CONNECTED = "connected"
 LOST = "lost"
 
 STATUS_TEXT = {
-    SEARCHING: "● No EEG stream — start Unicorn LSL Interface",
+    SEARCHING: "● No EEG stream — start the Unicorn LSL Interface (Windows) or unicorn_relay.py (Mac)",
     CONNECTED: "● EEG connected",
     LOST: "● EEG stream lost",
 }
@@ -740,7 +742,7 @@ def describe_recorder_exit(code: int, stderr_lines: Iterable[str] = ()) -> str:
     if code == 2:
         return f"Recorder refused to start: bad arguments or the output file already exists{suffix}"
     if code == 3:
-        return f"Recorder could not find the EEG stream — is the Unicorn LSL Interface streaming?{suffix}"
+        return f"Recorder could not find the EEG stream — is the Unicorn LSL Interface (Windows) or unicorn_relay.py (Mac) streaming?{suffix}"
     if code < 0:
         return f"Recorder was killed by signal {-code}."
     return f"Recorder exited with unexpected code {code}{suffix}"
@@ -813,7 +815,7 @@ RECORDER_STARTED_EVENT = "recording_started"
 
 def recorder_log_path(out_path) -> Path:
     """The recorder's structured log, which it writes next to its CSV by default."""
-    return Path(str(out_path) + ".log.jsonl")
+    return xlog.recorder_log_path(out_path)
 
 
 def recorder_started(out_path) -> bool:
@@ -830,6 +832,49 @@ def recorder_started(out_path) -> bool:
     except OSError:
         return False
     return False
+
+
+class SessionLogger:
+    """
+    Writes <recording>.session.json for one session: what was spelled (for a calibration
+    session, the calibration sentence), the settings, and the start/end timeline. Schema and
+    file names live in pipeline/experiment_log.py. begin() at Start, end() at stop.
+    """
+
+    def __init__(self, *, demo: bool, characters: list[str]):
+        self.demo = demo
+        self.characters = list(characters)
+        self.record: dict | None = None
+        self.path: Path | None = None
+
+    def begin(self, settings: SessionSettings, out_path, manifest_path) -> Path:
+        manifest = None
+        if manifest_path is not None:
+            manifest = {"path": str(manifest_path), "fingerprint": None, "language_model": None}
+            try:
+                loaded = load_manifest(manifest_path, verify_hashes=False)
+                manifest["fingerprint"] = loaded.fingerprint
+                manifest["language_model"] = loaded.lm_config
+            except ManifestError as exc:
+                manifest["error"] = str(exc)
+        options = {k: v for k, v in asdict(settings).items() if k not in ("session_id", "targets")}
+        record = xlog.build_session_record(
+            session_id=settings.session_id, demo=self.demo, targets=settings.targets,
+            characters=self.characters, settings=options, recording=out_path, manifest=manifest,
+            started_utc=xlog.utc_now_iso())
+        path = xlog.session_record_path(out_path)
+        xlog.write_json_atomic(record, path)
+        self.record, self.path = record, path
+        return path
+
+    def end(self, message: str, level: str, phase_at_end: str) -> Path | None:
+        """Finalizes the record written by begin(); a no-op if no session is open."""
+        if self.record is None:
+            return None
+        record, self.record = self.record, None
+        done = xlog.finalize_session_record(record, ended_utc=xlog.utc_now_iso(), message=message,
+                                            level=level, phase_at_end=phase_at_end)
+        return xlog.write_json_atomic(done, self.path)
 
 
 class SessionOrchestrator:
@@ -856,8 +901,10 @@ class SessionOrchestrator:
                  recorder_ready_timeout_s: float = RECORDER_READY_TIMEOUT_S,
                  kill_after_s: float = STOP_KILL_AFTER_S,
                  service_extra_args: Iterable[str] = (),
-                 recorder_ready: Callable = recorder_started):
+                 recorder_ready: Callable = recorder_started,
+                 session_log: SessionLogger | None = None):
         self.service_extra_args = list(service_extra_args)
+        self.session_log = session_log
         self.launcher = launcher
         self.clock = clock
         self.notify = notify
@@ -888,8 +935,13 @@ class SessionOrchestrator:
         self.settings = settings
         self.out_path = Path(out_path)
         self.stimulus_runner = stimulus_runner
+        self._begin_session_log(manifest_path)
         if manifest_path is not None:
-            self._launch("service", service_command(self.python, manifest_path, self.service_extra_args),
+            service_args = list(self.service_extra_args)
+            if self.session_log is not None:
+                # Keep this session's inference log next to its recording.
+                service_args += ["--log-file", str(xlog.inference_log_path(self.out_path))]
+            self._launch("service", service_command(self.python, manifest_path, service_args),
                          self.repo_root)
             self._enter(WAITING_SERVICE)
             self.notify("Starting live inference service — waiting for it to report ready…", INFO)
@@ -958,6 +1010,7 @@ class SessionOrchestrator:
     def stop(self, message: str = "Stopped.", level: str = INFO):
         """Terminate every running process (stimulus, recorder, service); kill stragglers later in tick()."""
         now = self.clock()
+        phase_at_end = self.phase
         for name in self.NAMES:
             handle = self.procs.pop(name, None)
             if handle is None:
@@ -969,6 +1022,7 @@ class SessionOrchestrator:
                     pass
                 self._stopping[name] = (handle, now + self.kill_after_s)
         self.phase = IDLE
+        self._end_session_log(message, level, phase_at_end)
         self.notify(message, level)
 
     def shutdown(self, wait_s: float = STOP_KILL_AFTER_S, sleep=None):
@@ -991,6 +1045,23 @@ class SessionOrchestrator:
         self._stopping.clear()
 
     # -- helpers ----------------------------------------------------------
+    def _begin_session_log(self, manifest_path):
+        """A session log that can't be written is reported, never fatal: the recording is what matters."""
+        if self.session_log is None:
+            return
+        try:
+            self.session_log.begin(self.settings, self.out_path, manifest_path)
+        except OSError as exc:
+            self.notify(f"Could not write the session log ({exc}); the recording itself is unaffected.", ERROR)
+
+    def _end_session_log(self, message, level, phase_at_end):
+        if self.session_log is None:
+            return
+        try:
+            self.session_log.end(message, level, phase_at_end)
+        except OSError as exc:
+            self.notify(f"Could not finish the session log ({exc}); the recording itself is unaffected.", ERROR)
+
     def _start_recorder(self):
         self._launch("recorder", recorder_command(self.python, self.out_path), self.collection_dir)
         self._enter(WAITING_RECORDER)

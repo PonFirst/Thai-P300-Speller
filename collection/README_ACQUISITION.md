@@ -10,9 +10,12 @@ Confirmed directly from primary sources (not relitigating this):
   give you a working Unicorn path on a Mac.
 - g.tec's own Unicorn Suite / Unicorn LSL Interface is Windows-only.
 
-So this repo's code never talks to the headset directly -- everything
-here is a pure LSL consumer. `collection/record_session.py` has no
-BrainFlow dependency and never imports a Unicorn SDK.
+So the recorder, the inference service, the panel and the stimulus never
+talk to the headset: they are pure LSL consumers, and
+`collection/record_session.py` has no BrainFlow dependency and never
+imports a Unicorn SDK. Something has to turn the headset's Bluetooth
+stream into LSL: on Windows that is g.tec's Unicorn LSL Interface, on a
+Mac it is this repo's own `collection/unicorn_relay.py` (see "Mac" below).
 
 ## Machine topology: one Windows machine (primary, documented path)
 
@@ -57,10 +60,77 @@ practical difference: LSL discovery defaults to UDP multicast, which
 can silently fail across virtual network segments; on one machine that
 concern doesn't arise.
 
+## Mac: `collection/unicorn_relay.py` (no g.tec software)
+
+The relay does what the Unicorn LSL Interface does and nothing else. It
+reads the headset's Bluetooth serial stream, decodes g.tec's documented
+45-byte payloads (UnicornBluetoothProtocol.pdf in
+github.com/unicorn-bi/Unicorn-Suite-Hybrid-Black), and publishes
+`UnicornEEG` (type `EEG`, 8 ch, 250 Hz, float32, microvolts) plus a
+separate `UnicornAux` stream (battery, accelerometer, gyroscope, device
+sample counter). Every consumer resolves by type, so nothing downstream
+changes.
+
+**Status: tested against a protocol-accurate fake headset, a
+pseudo-terminal and the real recorder** (`tests/test_unicorn_protocol.py`,
+`tests/test_unicorn_relay.py`); **not yet run against a real Unicorn.** That
+is TESTING.md H12-H14, and H12 comes first.
+
+1. **Pair the headset** in System Settings > Bluetooth (switch it on; it
+   shows as `UN-<serial>`). macOS creates `/dev/cu.UN-<serial>`;
+   `python collection/unicorn_relay.py --list-ports` lists it.
+2. **Start the relay:** `python collection/unicorn_relay.py` (or
+   `--port /dev/cu.UN-<serial>`). It waits up to 30 s for the port, starts
+   acquisition, and prints `publishing 'UnicornEEG' ...` about 2 s after the
+   first packet (the clock warm-up). Ctrl+C sends the stop command and
+   writes a report.
+3. **Then the usual sequence** below (recorder, stimulus, `./start_speller.sh`).
+   Stop the relay last.
+
+**Run the sample-counter gap test before trusting a session** (H12):
+`python collection/unicorn_relay.py --duration 1800 --report logs/gap_test.json`.
+The device numbers every sample, so `samples.missing` and `loss_pct` in the
+report are true losses, whatever the timing of delivery. The built-in
+Bluetooth shares a chip and antenna with Wi-Fi; if it drops packets, that
+is the first thing to change (a USB dongle needs a user-space Bluetooth
+stack such as Google's Bumble, whose `rfcomm_bridge` exposes the link as a
+TCP socket the relay reads with `--tcp HOST:PORT`; not tested here).
+
+What is different from the Windows path, and worth knowing:
+
+- **Channel labels are written by the relay**, from `EEG_CHANNELS`. The
+  headset sends none, so the service's electrode-label check cannot catch
+  a wrong cap here. Check physically that channels 1-8 are Fz C3 Cz C4 Pz
+  PO7 Oz PO8 (H13).
+- **Timestamps come from the headset's sample counter**, not from when
+  Bluetooth delivered the bytes (`unicorn_protocol.CounterClock`). Radio
+  bursts therefore do not smear the ERP: in simulation the stamp error is
+  about 0.1 ms, against about 5 ms when stamping on arrival. A lost packet
+  is a jump in the stamps, which the recorder's gap detection already
+  handles. The constant part of the link delay is not measurable in
+  software (H7, H14).
+- **The relay adds about 7 microseconds of work per packet** (0.17% of the
+  4 ms between packets, measured on an M3 Max). The delay that matters is the
+  Bluetooth link's own, the same on any host; `delivery_delay_ms` in the
+  report shows how late packets arrive relative to the best ones.
+- **No reconnect.** If the link is lost or goes silent for 3 s the relay
+  exits 4 and the panel shows "EEG stream lost". Restart it.
+- The port is opened exclusively: a second program reading it would steal
+  bytes and look like packet loss.
+
+Try it with no headset: `python tools/fake_unicorn_bt.py --port 9000`, then
+`python collection/unicorn_relay.py --tcp 127.0.0.1:9000`. The relay
+recognises the fake's marker and names its streams `MockUnicornEEG` /
+`MockUnicornAux`, so synthetic data cannot pass for a real `UnicornEEG`.
+
+Exit codes: 0 stopped, 2 bad arguments or no headset port, 3 could not
+connect, 4 link lost or silent.
+
 ## Startup sequence -- order matters
 
-1. **Start the Unicorn LSL Interface.** Connect to the headset, click
-   Start streaming. Confirm in that app that it is actively streaming
+1. **Start the Unicorn LSL Interface** (Windows; on a Mac start
+   `collection/unicorn_relay.py` instead, see above). Connect to the headset, click
+   Start streaming. Confirm that it is actively streaming
    before moving on.
 2. **Start `collection/record_session.py`.** It resolves the
    EEG stream by type (`--eeg-type`, default `EEG`) with exponential

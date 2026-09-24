@@ -6,29 +6,34 @@ PhD application portfolio work (targeting CMU ECE/BME): a Thai-language P300 vis
 
 - **The classifier** (xDAWN + RegLDA, `classifiers/`) is validated and not the contribution.
 - **The contribution** is Bayesian dynamic stopping (`stopping/`): a fixed confidence threshold plus a Thai character-level LM prior.
-  - The LM is an n-gram today.
-  - The owner will build a character-level Transformer later. It will be a new `language_model` type in `pipeline/manifest.py` plus a builder in `pipeline/language_model.py`.
+  - The LM is a character-level Transformer, now the intended production prior. It was trained in `stopping/gpt_dev.ipynb` (Karpathy-style GPT, full `pythainlp/thai-wiki-dataset-v3` corpus, run on Colab) and is wired in as the `transformer` `language_model` type: `pipeline/manifest.py` schema, `_build_transformer` in `pipeline/language_model.py`, model code in `stopping/transformer_lm.py`, selected at fit time with `--lm-transformer-checkpoint`.
+  - The n-gram (`stopping/lm_prior.py`, type `ngram`) is kept as a registered alternative and a comparison baseline; `uniform` is the no-LM control.
+  - The model trains on natural, unrestricted Thai text and is **marginalized** to the 72 matrix characters only when a prior is produced (`get_prior`), same convention as the n-gram.
 - **Boundary-aware thresholding is descoped.** The paper's novelty angle is **not decided**; don't assume one.
 - **Predictive whole-word matrix cells are rejected — do not propose this again.** The idea: replace some fixed single-character cells with LM-predicted word completions, to commit multiple characters in one trial. Explored and rejected on its merits, not just "too much work":
   - `flash_sequence.build_flash_sequence()` hard-requires an even `n_chars` (splits into two equal checkerboard colors) and `n_cols` odd (adjacency-safety); the matrix can't just shrink by an arbitrary amount.
   - A word-completion "probability" and a next-character probability aren't the same measured quantity and can't coherently share one normalized `get_prior()` distribution without a real reformulation of what the LM prior even means for those slots.
   - It needs a dynamically-rebuilt-per-trial matrix; everything today (the manifest's sha256-verified `characters` file, `board_schedule.py`'s pre-built whole-session flash schedule) assumes static, fixed-in-advance matrix content.
-  - Whole-word generation (not just next-character prediction) is a materially harder, separate ML task from the character-level Transformer already planned.
+  - Whole-word generation (not just next-character prediction) is a materially harder, separate ML task from the character-level Transformer already built.
   - The character-level LM prior already delivers the same underlying mechanism (biasing the starting posterior toward the likely next letter) with none of this risk — this idea's marginal benefit on top of that, even if it worked, was never established.
   - If it resurfaces, it's future-work for the paper's discussion section, not something to build here.
 
 ## Hard constraints — do not relitigate
 
 - **Hardware path.**
-  - This repo is developed on an Apple M3 Mac. BrainFlow's Unicorn class is compiled out on macOS, and g.tec's tools are Windows-only, so the Mac never talks to the headset directly — everything here is a pure LSL consumer.
-  - **Deployment target: one Windows machine, not two.** The headset driver, the Unicorn LSL Interface, `record_session.py`, `pipeline/inference_service.py`, `collection/session_gui_qt.py`, and the stimulus all run together on one Windows machine the project owner fully controls. This replaced an earlier Mac+VM / Mac+Linux-box split. Every process already resolves LSL streams by type, never by hostname, so this was a deployment simplification, not an architecture change — don't reintroduce network-hop assumptions (a hardcoded remote host, a timeout padded for a network round-trip, multicast-segment caveats) now that everything resolves on localhost. The old split-machine setup still works unchanged if ever needed again; it's just no longer the documented primary path.
+  - This repo is developed on an Apple M3 Mac. BrainFlow's Unicorn class is compiled out on macOS and g.tec's software is Windows-only, so nothing here uses BrainFlow or a g.tec SDK. The recorder, inference service, panel and stimulus are pure LSL consumers on every machine.
+  - **The Mac can now run real sessions, through this repo's own relay.** The owner's decision (they want the whole project to run on the Mac and accepted changing this constraint): `collection/unicorn_relay.py` reads the headset's Bluetooth serial port (`/dev/cu.UN-*`, the built-in radio; `--tcp` takes a Bumble `rfcomm_bridge` for a USB dongle) using g.tec's documented protocol (`collection/unicorn_protocol.py`, from UnicornBluetoothProtocol.pdf) and publishes the same `UnicornEEG` stream the Unicorn LSL Interface does. **It has not been run against a real headset.** It is tested only against a protocol-accurate fake, a pty and the real recorder, so treat Mac sessions as unproven until TESTING.md H12–H14 pass (H12, the 30-minute counter-gap test, first). Do not describe the Mac path as working on real hardware before then.
+  - **Windows remains supported:** one machine running g.tec's Unicorn LSL Interface, `record_session.py`, `pipeline/inference_service.py`, `collection/session_gui_qt.py` and the stimulus together. This replaced an earlier Mac+VM / Mac+Linux-box split. Every process already resolves LSL streams by type, never by hostname, so this was a deployment simplification, not an architecture change — don't reintroduce network-hop assumptions (a hardcoded remote host, a timeout padded for a network round-trip, multicast-segment caveats) now that everything resolves on localhost. The old split-machine setup still works unchanged if ever needed again; it's just no longer the documented primary path.
   - Never suggest `pip install brainflow`.
 - **The core stopping math is owner-implemented and now done.** `BayesianStoppingController.reset()`, `.llr()`, `.update()` were filled in by hand (blend-with-uniform-floor prior, Platt-scaled LLR with the pi correction term, group-only log-domain update + fixed-threshold stop) and are verified against a hand-worked toy example in `tests/test_bayesian_stopping.py`.
   - Never implement, rewrite, or "fix" them without an explicit ask — that protection doesn't end just because they're filled in now.
   - Everything around them is fair game.
 - **The inference service is a strict checkpoint loader, never a fallback trainer.** It reads the classifier path from `session_manifest.json` and refuses to start (exit 2) unless the checkpoint's channel order, sample rate, and epoch window match the live stream exactly. Never relax this "to get something running" — tests use a scripted/mocked classifier for exactly this reason, and real inference stays blocked until a real checkpoint exists from `pipeline/fit_from_recording.py`. That fit is per-subject calibration, not "retraining the algorithm" — no algorithm redesign is implied, and fitted weights are never expected to transfer to new hardware without a new fit.
-- **No dependency on g.tec's Unicorn Speller, ever, for any reason** — not a fallback, not a comparison baseline, not a customization target. The stimulus, classifier, calibration, LM prior, and stopping logic are fully custom and stay fully custom. The only g.tec software this project touches is the Unicorn LSL Interface, a raw data relay with no P300 logic of its own. A task that seems to need Unicorn Speller needs to be solved in this project's own code instead.
+- **No dependency on g.tec's Unicorn Speller, ever, for any reason** — not a fallback, not a comparison baseline, not a customization target. The stimulus, classifier, calibration, LM prior, and stopping logic are fully custom and stay fully custom. The only g.tec software this project touches is the Unicorn LSL Interface (Windows only), a raw data relay with no P300 logic of its own; on a Mac it touches none, only g.tec's published Bluetooth protocol document. A task that seems to need Unicorn Speller needs to be solved in this project's own code instead.
 - **The montage is `Fz, C3, Cz, C4, Pz, PO7, Oz, PO8` — the Unicorn Hybrid Black's factory-default cap, now verified, not the reference paper's layout.** Confirmed against g.tec's own Unicorn Suite Hybrid Black user manual (github.com/unicorn-bi/Unicorn-Suite-Hybrid-Black-User-Manual), cross-checked against a MathWorks third-party support-package listing and multiple published papers using this exact headset. The earlier assumption (`Fz, F3, C4, Cz, Pz, P3, O2, O1`) was inherited from Pananookooln et al.'s own EEG system and cap and was never actually checked against this project's hardware — four of the eight positions are genuinely different scalp sites, not relabelling: C3 vs. the old F3, PO7 vs. P3, Oz vs. O2, PO8 vs. O1. `pipeline/constants.EEG_CHANNELS` is the single definition; every other file imports it. Any recording or checkpoint made before this correction used the wrong channel identities on four of eight channels and is not safe to fit or evaluate against — treat any pre-correction `collection/recordings/*.csv` or `models/*` as invalid, not as a shortcut. Don't drift back toward the reference paper's montage.
+- **The Transformer LM is trained on Colab, never on this Mac.** The owner's instruction, verbatim: "DO NOT run it in my computer, it will EXPLODE." `stopping/gpt_dev.ipynb` downloads the ~430 MB corpus and trains for ~25 min on a T4; do not run it, or a scaled-down version of it, locally. Local work with it is limited to loading a finished checkpoint and small forward passes (`ThaiTransformerLM.get_prior` takes single-digit ms on CPU).
+- **A Transformer checkpoint is only valid for the matrix it was trained against.** Its vocab force-includes every character of `characters_th.json` as it was at training time. `ThaiTransformerLM` raises `ValueError` at construction if a matrix character is missing from the checkpoint's vocab, and `get_prior` indexes directly instead of falling back to `<unk>`. Never restore a fallback: it yields a distribution that sums to 1 but is silently wrong. If the matrix changes again (it changed once already: digits 6/7 → ั ็), retrain on Colab with the new file.
+- **The inference service never decodes with the cued target.** It reads `target_char_idx` from the `trial_start` marker only to score commits in the experiment log (`correct`, `target_prior_rank`). Keep that read log-only.
 - **Every recording logs full per-flash metadata.** Never regress this.
 - **Don't modify the stimulus or the classifier without an explicit ask.**
   - `collection/checkerboard_stimulus.py` was out of scope in the last round.
@@ -39,6 +44,8 @@ PhD application portfolio work (targeting CMU ECE/BME): a Thai-language P300 vis
 - A pipenv virtualenv (`storefront`) sits earlier on `PATH` than conda, so **`python` is the wrong interpreter even after `conda activate p300speller`**. Always call the env's interpreter by path: `PY="$(conda info --base)/envs/p300speller/bin/python"`.
 - `start_speller.sh` does this for you, and the GUI launches its child processes with `sys.executable`.
 - GUI tests need `QT_QPA_PLATFORM=offscreen`.
+- `stopping/` and `pipeline/` are packages: run their modules with `$PY -m stopping.<name>` from the repo root. `$PY stopping/<name>.py` fails with `No module named 'stopping'`.
+- `torch` and `jupyter` are in `requirements.txt` for the Transformer LM. Checkpoints are gitignored: `models/thai_gpt_checkpoint.pt` is the full-corpus model (5.60M params, block 64, 1,661-token vocab) and the one to use; `stopping/data/thai_gpt_checkpoint.pt` is the superseded first pass (0.88M params, block 128), kept only for comparison.
 
 ## Contracts
 
@@ -48,7 +55,8 @@ PhD application portfolio work (targeting CMU ECE/BME): a Thai-language P300 vis
 |---|---|
 | Stream names/types, channel order, 250 Hz, µV thresholds, the dejitter switch | `pipeline/constants.py` |
 | `P300Inference` events (service → GUI), strictly validated on both ends | `pipeline/events.py` |
-| `session_manifest.json`: which model files a run uses (sha256-verified, fingerprinted) | `pipeline/manifest.py` |
+| `session_manifest.json`: which model files a run uses, LM included (`uniform` / `ngram` + corpus / `transformer` + checkpoint; sha256-verified, fingerprinted) | `pipeline/manifest.py` |
+| Experiment logs: sidecar file names, `<csv>.session.json` (calibration sentence, timeline), `models/<id>_fit_report.json`, inference-log records | `pipeline/experiment_log.py` (schema table in `docs/INTERFACES.md`) |
 | Quality levels + quality gate (shared by GUI map and service) | `pipeline/quality.py` |
 | Epoch cutting (shared by fit script and service: train/serve parity) | `pipeline/epoching.py` |
 | Marker JSON (`trial_start` / `flash` / `trial_end`) | `collection/checkerboard_stimulus.py` |
@@ -67,7 +75,7 @@ collection/
   session_gui_qt.py              PySide6 panel: traces, scalp map, target entry, settings, composed text,
                                  confidence gauge; launches service -> recorder -> stimulus
   gui_logic.py                   all panel logic without Qt (tested): settings, paths, connection state,
-                                 inference display model, SessionOrchestrator
+                                 inference display model, SessionOrchestrator, SessionLogger (writes <csv>.session.json)
   board_qt.py, board_schedule.py in-window stimulus board (the panel's default) and its timeline;
                                  same markers and trial structure as checkerboard_stimulus.py
   session_gui.py                 LEGACY Tkinter panel, kept as a fallback
@@ -75,23 +83,34 @@ collection/
   checkerboard_stimulus.py       PsychoPy matrix, cue phase, JSON markers at flip time
   flash_sequence.py              pure checkerboard grouping logic
   mock_headset.py                synthetic EEG outlet: fault flags, P300 on target flashes, fixed sample grid
+  unicorn_relay.py               Mac path: Unicorn Bluetooth serial (or --tcp) -> LSL UnicornEEG + UnicornAux;
+                                 counter-based timestamps, counter-gap report (--duration/--report)
+  unicorn_protocol.py            pure logic for it: payload decode/encode, stream framer, counter tracker, CounterClock
   README_ACQUISITION.md          single-machine setup (primary) + startup order, recorder output and exit codes
   checkerboard.py, checkerboard_experiment.py, test_sync.py   LEGACY, pre-contract; don't use
 pipeline/
-  constants.py quality.py events.py manifest.py epoching.py   shared contracts
-  inference_service.py           live inference: LSL in, P300Inference out (InferenceEngine is pure)
+  constants.py quality.py events.py manifest.py epoching.py experiment_log.py   shared contracts
+  inference_service.py           live inference: LSL in, P300Inference out (InferenceEngine is pure); writes the
+                                 experiment log (LM prior at each character's start, per-flash updates, commits)
   fit_from_recording.py          calibration CSV -> classifier checkpoint + Platt calibration + manifest
+                                 + fit report; --lm-corpus (ngram) | --lm-transformer-checkpoint (transformer)
   classifier_io.py               checkpoint save/load, stream compatibility, channel-label policy
-  language_model.py              LM factory (uniform | ngram), prior validated at the boundary
+  language_model.py              LM factory (uniform | ngram | transformer), prior validated at the boundary
 stopping/
   bayesian_stopping.py           log_normalize + controller: reset/llr/update, owner-implemented, done
   calibrate.py lm_prior.py replay.py   Platt/ECE, ThaiNgramLM, replay + Wolpaw ITR
+  transformer_lm.py              ThaiGPT architecture + ThaiTransformerLM (checkpoint -> get_prior); single copy
+  gpt_dev.ipynb                  trains the Transformer LM: RUN ON COLAB ONLY (see hard constraints)
+  compare_transformers.py, model_comparison.py   old vs new Transformer vs n-gram: accuracy, latency (CPU)
+  summarize_experiment.py        logs -> accuracy + Wilson CI, Wolpaw ITR, LM effect, per-character table
   evaluate_recording.py          real-recording replay: accuracy/mean-flashes/ITR swept over theta/t_min/...
   validate_offline.py            code validation on a FABRICATED grid, not a research result
   flash_selector.py              info-gain ordering stubs, out of scope
 tools/
   fake_inference_publisher.py    scripted P300Inference stream for GUI QA
   e2e_demo_smoke.sh              no-hardware end to end: record -> fit -> service ready (opens a window)
+  fake_unicorn_bt.py             protocol-accurate fake headset over TCP (drops, bursts, garbage); its data is
+                                 marked synthetic and the relay then names the streams Mock*
 classifiers/                     benchmark_all.get_pipelines() = single source of the 5 pipelines
 config.py, data_loader.py        MOABB/BNCI EDA path (volts!)
 tests/                           see TESTING.md; test_fault_injection.py = cross-component scenarios
@@ -102,16 +121,23 @@ docs/INTERFACES.md, TESTING.md
 
 ```bash
 ./start_speller.sh --demo                       # no hardware: mock EEG + panel; recordings prefixed demo_
-./start_speller.sh                              # real headset; start the Unicorn LSL Interface FIRST (same machine)
+./start_speller.sh                              # real headset; start the Unicorn LSL Interface (Windows) or the relay (Mac) FIRST
+$PY collection/unicorn_relay.py                 # Mac: headset paired in System Settings -> /dev/cu.UN-*; --list-ports to check
+$PY collection/unicorn_relay.py --duration 1800 --report logs/gap_test.json      # the H12 sample-counter gap test
+$PY tools/fake_unicorn_bt.py --port 9000        # no headset: then  $PY collection/unicorn_relay.py --tcp 127.0.0.1:9000
 $PY collection/mock_headset.py --flat PO7 --noisy C4 --railed Oz      # exercise quality colours
-$PY -m pipeline.fit_from_recording --recording collection/recordings/<file>.csv --id subject_001
+$PY -m pipeline.fit_from_recording --recording collection/recordings/<file>.csv --id subject_001 \
+    --lm-transformer-checkpoint models/thai_gpt_checkpoint.pt     # omit the flag for the uniform LM; --lm-corpus for ngram
 $PY -m pipeline.inference_service --manifest session_manifest.json    # normally launched by the panel
+$PY -m stopping.summarize_experiment --recording collection/recordings/<test_session>.csv   # accuracy, ITR, LM effect
+$PY -m stopping.model_comparison                # old vs new Transformer vs n-gram (fits the n-gram: ~16 s)
 $PY tools/fake_inference_publisher.py --include-malformed             # drive the composed-text panel
 QT_QPA_PLATFORM=offscreen $PY -m pytest tests/ -q
 ```
 
 - **Expected tests:** all pass. Three tests self-skip with "BayesianStoppingController.reset() is implemented now" (`test_fault_injection.py`, `test_inference_service.py` x2) — they exist to check stub-only behavior and correctly stand down now that it's filled in.
 - **Output locations:** recordings go to `collection/recordings/` and models to `models/` (both gitignored). Demo artifacts are always `demo_`-prefixed.
+- **Experiment logs** sit next to each recording: `<csv>.session.json` (the calibration sentence typed, settings, timeline), `<csv>.log.jsonl` + `<csv>.integrity.json` (recorder), `<csv>.inference.log.jsonl` (LM prior per character, per-flash updates, commits). The fit report is `models/<id>_fit_report.json`. Nothing in `collection/recordings/` is created by tests.
 
 ## Known gotchas — don't silently reintroduce
 
@@ -149,6 +175,15 @@ QT_QPA_PLATFORM=offscreen $PY -m pytest tests/ -q
     - Qt on macOS has no presentation timestamp, so the board stamps markers when it requests a repaint.
     - Measured: on schedule within 7 ms; the lag to the screen is unmeasured.
     - Use Board = "Separate window (precise timing)" for real data until TESTING.md H7 passes.
+19. **`get_prior()` runs once per trial, not per flash.** `InferenceEngine._start_trial` calls it at `trial_start`; the controller's `update()` then runs once per flash and touches only that flash's 6-character group (one row or column of a color's 6×6 virtual matrix; `pi` = 6/72), then renormalizes all 72. The latency budget is therefore the stimulus's `cue_duration_ms` (2000 ms), not the 124 ms flash interval.
+20. **The controller's `lam` blend caps how much the LM can move the start.** `p0 = lam·prior + (1−lam)/72`, so with the default `lam = 0.7` a 99% LM prior starts the posterior near 0.70. The experiment log records `lm_prior` and `initial_posterior` side by side so this stays visible.
+21. **The Transformer's `<unk>` token is U+E000 (private use).** Terminals and editors often draw it as an empty string (`UNK = ""` in a diff), but the stored value is correct. Check with `repr()` or `ord()` before "fixing" it.
+22. **Transformer LM latency and accuracy figures are Mac-only and small-sample.** Measured on an M3 Max, CPU forced: 6.7 ms per `get_prior` (≈300× under the 2000 ms budget). The Windows deployment machine is unmeasured. Accuracy comes from 16 hand-picked common-word completions, which is suggestive, not a publishable evaluation.
+
+23. **With the relay, the channel labels are ours.** The headset sends none, so `unicorn_relay.py` writes `EEG_CHANNELS` onto channels 1–8, and the service's electrode-label check can no longer catch a wrong cap. Verify physically (TESTING.md H13); H2's "real device labels" question is moot for this path.
+24. **The relay's timestamps come from the device counter, not arrival.** Bluetooth bursts would otherwise smear ERPs (simulated: ~0.1 ms stamp error vs ~5 ms on arrival). A lost packet is a stamp jump that the recorder already detects, and `samples.missing` in the relay report is the true loss. The constant link delay is unmeasurable in software (H7, H14). Cost of the relay itself: ~7 µs per packet.
+25. **g.tec's protocol PDF has a typo:** its counter formula prints `Counter[1]` three times; the C example beside it (and `unicorn_protocol.py`) use bytes 0–3, little-endian. EEG is big-endian 24-bit; accelerometer, gyroscope and counter are little-endian.
+26. **Mac display timing (from the owner's research notes, measured on an M3 Max in a separate session; not re-verified in this repo).** Reported: steady flashing locks at 8.33 ms frames, so the PsychoPy stimulus's 62 ms waits round up to 66.7 ms flashes and a 133.3 ms SOA at both 60 and 120 Hz (the paradigm never ran at 62/124 ms on any machine); ProMotion's idle slowdown leaves the first flash after a static screen a few ms uncertain; the in-window Qt board keeps 124 ms, so **the two boards give different SOAs: calibrate and run online on the same board.** For sessions: fixed 60 Hz (System Settings → Displays; unmeasured), charger plugged in, "Separate window" board. `evaluate_recording` is unaffected because it measures time per flash from the recording's markers. Flip-to-light lag is still unknown (H7).
 
 ## Results so far (flash-level, subjects 1–5, GroupKFold by subject)
 
@@ -166,11 +201,22 @@ From `results/all_classifiers_results.csv` (AUC / balanced accuracy):
 - **Unreconciled earlier run.** A `benchmark_all.py` run reported FgMDM at 0.769 / 0.694 on 008. Reconcile the configurations before citing either.
 - **Subject 4 was the worst fold everywhere.** Treat it as a finding.
 
+## LM prior comparison (`stopping/model_comparison.py`; 16 hand-picked Thai completions, CPU on an M3 Max)
+
+| LM | top-1 | top-3 | mean surprisal | mean `get_prior` | one-time cost |
+|---|---|---|---|---|---|
+| Transformer, full corpus (5.60M params) | 81.3% | 100% | 0.63 bits | 6.7 ms | 46 ms load |
+| N-gram, order 4 | 75.0% | 100% | 0.96 bits | 0.008 ms | 15.8 s fit |
+| Transformer, first pass (0.88M params) | 68.8% | 93.8% | 1.18 bits | 2.0 ms | 10 ms load |
+
+- With 16 items the ranking is suggestive only. To compare LMs on the actual task, replay one recording under each (`stopping.evaluate_recording`); each model's own training loss is not comparable (different corpus, vocab, split).
+- Training-run facts, for the paper: full corpus, 20,000 steps, batch 64, block 64, 6 layers, 256-dim, 8 heads, ~25 min on a Colab T4, final train 1.53 / val 1.16 (val stayed below train throughout, so no sign of overfitting). Batches are sampled at random with replacement: 20,000 × 64 × 64 ≈ 82M positions. The full-corpus character count was not recorded, so how many passes that is over the data is unknown; the notebook's `train: … tokens` line on Colab has it.
+
 ## Conventions
 
 - **Filenames:** no day-number prefixes.
 - **Pipelines:** new ones go in `get_pipelines()`.
-- **Shared constants:** import them; don't redeclare.
+- **Shared constants:** import them; don't redeclare. That includes the experiment-log file suffixes and schemas (`pipeline/experiment_log.py`) and the Transformer architecture (`stopping/transformer_lm.py`).
 - **Pure logic apart from I/O:** keep it separate, and test it without hardware.
   - Examples: `flash_sequence`, `gui_logic`, `InferenceEngine`, `mock_headset`'s pure functions.
 - **Threshold tests:** check every channel across several seeds, with margin. Single-seed tests have missed two boundary bugs here.

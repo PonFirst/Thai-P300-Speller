@@ -340,7 +340,7 @@ def test_recording_path_with_injected_exists():
 def test_connection_searching_blocks_start():
     conn = gl.EegConnection()
     assert conn.state == gl.SEARCHING and not conn.start_allowed
-    assert conn.status_text == "● No EEG stream — start Unicorn LSL Interface"
+    assert conn.status_text == "● No EEG stream — start the Unicorn LSL Interface (Windows) or unicorn_relay.py (Mac)"
     assert conn.status_color == gl.QUALITY_RED
     assert conn.tick(1e6) == gl.SEARCHING
     assert conn.on_stream_dropped(5.0) == gl.SEARCHING

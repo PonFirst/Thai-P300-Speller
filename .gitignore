@@ -13,6 +13,10 @@ collection/thai_speller_logs/
 # Fitted classifier checkpoints and calibration -- derived from subject data
 models/
 
+# stopping/gpt_dev.ipynb's downloaded Thai corpus + trained checkpoint --
+# large, regenerable by re-running the notebook, not source
+stopping/data/
+
 # Manifests point at checkpoints under models/, which don't exist in a fresh
 # clone -- derived, not source, like the checkpoints themselves
 /session_manifest.json

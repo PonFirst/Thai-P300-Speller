@@ -9,9 +9,9 @@ ValidatedLanguageModel, which checks every prior at the boundary, so a buggy
 model fails loudly instead of feeding the controller a distribution that
 doesn't sum to 1.
 
-Adding a Transformer LM later means: add its type to manifest.LM_TYPES and its
-schema check to manifest.validate_manifest_dict(), write a builder here, and
-register it in LM_BUILDERS. Nothing else changes.
+"transformer" loads a stopping/gpt_dev.ipynb checkpoint via
+stopping.transformer_lm.ThaiTransformerLM -- same factory pattern as "ngram",
+just a different builder registered in LM_BUILDERS.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from typing import Callable, Protocol
 import numpy as np
 
 from stopping.lm_prior import ThaiNgramLM
+from stopping.transformer_lm import ThaiTransformerLM
 
 PRIOR_SUM_TOLERANCE = 1e-6
 
@@ -90,9 +91,17 @@ def _build_ngram(lm_config: dict, manifest, characters: list[str]):
                                         backoff_weight=lm_config["backoff_weight"])
 
 
+def _build_transformer(lm_config: dict, manifest, characters: list[str]):
+    checkpoint = manifest.transformer_checkpoint_path
+    if checkpoint is None or not checkpoint.is_file():
+        raise LanguageModelError(f"transformer language model: checkpoint not found at {checkpoint}")
+    return ThaiTransformerLM.from_checkpoint_path(str(checkpoint), characters)
+
+
 LM_BUILDERS: dict[str, Callable] = {
     "uniform": _build_uniform,
     "ngram": _build_ngram,
+    "transformer": _build_transformer,
 }
 
 

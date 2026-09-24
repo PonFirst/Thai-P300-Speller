@@ -110,8 +110,9 @@ def test_verify_hashes_false_skips_file_checks(tmp_path):
     (lambda d: d["stopping"].update(t_max=10.5), "t_max"),
     (lambda d: d["stopping"].update(llr_clip=0), "llr_clip"),
     (lambda d: d["stopping"].pop("lam"), "lam"),
-    (lambda d: d.update(language_model={"type": "transformer"}), "language_model.type"),
+    (lambda d: d.update(language_model={"type": "bogus"}), "language_model.type"),
     (lambda d: d.update(language_model={"type": "ngram"}), "corpus"),
+    (lambda d: d.update(language_model={"type": "transformer"}), "checkpoint"),
     (lambda d: d.update(quality_gate={"policy": "downweight"}), "policy"),
     (lambda d: d.update(extra_key=1), "extra_key"),
     (lambda d: d["classifier"].update(sha256="abc"), "sha256"),
@@ -142,6 +143,27 @@ def test_ngram_corpus_is_hashed_and_resolved(tmp_path):
     corpus.write_text("changed", encoding="utf-8")
     with pytest.raises(ManifestError, match="language_model.corpus artifact changed"):
         mf.load_manifest(m.path)
+
+
+def test_transformer_checkpoint_is_hashed_and_resolved(tmp_path):
+    checkpoint = tmp_path / "thai_gpt_checkpoint.pt"
+    checkpoint.write_bytes(b"fake-checkpoint")  # manifest-level checks never load the checkpoint
+    m = _manifest(tmp_path, language_model={"type": "transformer", "checkpoint_path": checkpoint})
+    assert m.transformer_checkpoint_path == checkpoint.resolve()
+    assert m.corpus_path is None
+    assert m.lm_config == {"type": "transformer",
+                           "checkpoint": {"path": "thai_gpt_checkpoint.pt", "sha256": mf.sha256_file(checkpoint)}}
+    checkpoint.write_bytes(b"a different checkpoint")
+    with pytest.raises(ManifestError, match="language_model.checkpoint artifact changed"):
+        mf.load_manifest(m.path)
+
+
+def test_transformer_checkpoint_path_is_none_for_other_lm_types(tmp_path):
+    assert _manifest(tmp_path).transformer_checkpoint_path is None
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text("กขค", encoding="utf-8")
+    m = _manifest(tmp_path, language_model={"type": "ngram", "corpus_path": corpus})
+    assert m.transformer_checkpoint_path is None
 
 
 def test_missing_manifest_points_to_fit_script(tmp_path):

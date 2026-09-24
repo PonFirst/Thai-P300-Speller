@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -102,8 +103,57 @@ def test_invalid_model_fails_at_construction(characters, monkeypatch):
 
 
 def test_unknown_type_and_bad_context(tmp_path, characters):
-    with pytest.raises(LanguageModelError, match="transformer"):
-        lmod.build_language_model(SimpleNamespace(lm_config={"type": "transformer"}, corpus_path=None), characters)
+    with pytest.raises(LanguageModelError, match="bogus"):
+        lmod.build_language_model(SimpleNamespace(lm_config={"type": "bogus"}, corpus_path=None), characters)
     lm = lmod.build_language_model(_manifest(tmp_path), characters)
     with pytest.raises(LanguageModelError, match="context"):
         lm.get_prior(None)
+
+
+def _write_tiny_transformer_checkpoint(path, characters):
+    """A minimal-but-real checkpoint in gpt_dev.ipynb's bundle format, small enough to build
+    and run in a test in milliseconds -- exercises the real ThaiGPT/ThaiTransformerLM code
+    path without depending on the large, gitignored checkpoints under stopping/data/ or
+    models/, which don't exist in a fresh checkout."""
+    import torch
+    from stopping.transformer_lm import ThaiGPT
+
+    vocab = sorted(set(characters)) + [""]
+    config = {"block_size": 8, "n_embd": 8, "n_head": 2, "n_layer": 1, "dropout": 0.0,
+             "vocab_size": len(vocab)}
+    model = ThaiGPT(config["vocab_size"], config["block_size"], config["n_embd"],
+                    config["n_head"], config["n_layer"], config["dropout"])
+    torch.save({"model_state_dict": model.state_dict(), "vocab": vocab, "config": config}, path)
+
+
+def test_transformer_built_from_manifest_checkpoint(tmp_path, characters):
+    checkpoint = tmp_path / "thai_gpt_checkpoint.pt"
+    _write_tiny_transformer_checkpoint(checkpoint, characters)
+    manifest = _manifest(tmp_path, {"type": "transformer", "checkpoint_path": checkpoint})
+    lm = lmod.build_language_model(manifest, characters)
+    for context in ("", characters[0], "".join(characters[:5]), "x" * 40):
+        prior = lm.get_prior(context)
+        assert prior.shape == (72,)
+        assert abs(prior.sum() - 1) < 1e-6
+        assert np.all(prior >= 0)
+
+
+def test_transformer_checkpoint_missing_is_reported(tmp_path, characters):
+    checkpoint = tmp_path / "thai_gpt_checkpoint.pt"
+    _write_tiny_transformer_checkpoint(checkpoint, characters)
+    manifest = _manifest(tmp_path, {"type": "transformer", "checkpoint_path": checkpoint})
+    checkpoint.unlink()
+    with pytest.raises(mf.ManifestError, match="artifact missing"):
+        mf.load_manifest(manifest.path)
+
+
+def test_transformer_checkpoint_missing_matrix_character_fails_loudly(tmp_path, characters):
+    """A checkpoint trained against a different (e.g. older) characters_th.json than the one
+    this manifest uses must fail at construction, not silently reuse the UNK slot's
+    probability for the character it was never trained to predict."""
+    checkpoint = tmp_path / "thai_gpt_checkpoint.pt"
+    stale_matrix = characters[1:]  # missing characters[0], as if the matrix grew since training
+    _write_tiny_transformer_checkpoint(checkpoint, stale_matrix)
+    manifest = _manifest(tmp_path, {"type": "transformer", "checkpoint_path": checkpoint})
+    with pytest.raises(ValueError, match=re.escape(characters[0])):
+        lmod.build_language_model(manifest, characters)
