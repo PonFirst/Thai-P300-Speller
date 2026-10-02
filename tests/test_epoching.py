@@ -150,3 +150,21 @@ def test_batch_extraction_reports_per_onset_reasons():
     assert X.shape == (1, 8, 200)
     assert kept.tolist() == [True, False, False]
     assert reasons == [None, ep.BEFORE_BUFFER, ep.NOT_YET_AVAILABLE]
+
+
+def test_is_rank_deficient_flags_only_linearly_dependent_channels():
+    from pipeline.epoching import RANK_TOLERANCE, is_rank_deficient
+    rng = np.random.default_rng(0)
+    x = rng.normal(0, 10, size=(8, 200))
+    assert not is_rank_deficient(x)
+    assert not is_rank_deficient(x * 1e-4) and not is_rank_deficient(x * 1e4 + 1e5)   # scale/offset free
+    for make in (lambda a: a.__setitem__(3, 7.0),                    # constant channel
+                 lambda a: a.__setitem__(3, a[2]),                   # bridged: identical channels
+                 lambda a: a.__setitem__(3, 2 * a[1] - a[5])):       # any linear combination
+        y = x.copy()
+        make(y)
+        assert is_rank_deficient(y)
+    assert is_rank_deficient(np.zeros((8, 200)))
+    near = x.copy()
+    near[3] = near[2] + rng.normal(0, 1e-2, 200)                     # nearly bridged: still scoreable
+    assert not is_rank_deficient(near) and RANK_TOLERANCE == 1e-10

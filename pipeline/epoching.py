@@ -27,7 +27,17 @@ BEFORE_BUFFER = "before_buffer"
 GAP_IN_WINDOW = "gap_in_window"
 NON_MONOTONIC = "non_monotonic"
 NON_FINITE = "non_finite"
+RANK_DEFICIENT = "rank_deficient"
 MAX_SAMPLE_GAP_FACTOR = 1.5
+# An epoch whose channels are linearly dependent (a flat or railed-constant channel, two bridged
+# electrodes) gives the xDAWN covariance an exactly singular matrix: the tangent-space log is then
+# undefined, and sklearn either raises or returns an arbitrary score depending on rounding. Real
+# epochs sit many orders of magnitude above this ratio of smallest to largest channel-covariance
+# eigenvalue; degenerate ones sit at ~1e-16. Every path that scores an epoch checks it: the inference
+# service, evaluate_recording and the BCI2000 filter (RiemannP300Math.h) after their quality gate
+# (which names a flat or railed channel more usefully), fit_from_recording before training (the fit
+# has no quality gate: a red but non-singular epoch is still trained on, as it always was).
+RANK_TOLERANCE = 1e-10
 
 
 @lru_cache(maxsize=16)
@@ -200,6 +210,15 @@ def preprocess_segment(segment, spec: EpochSpec) -> np.ndarray:
         i0, i1 = spec._baseline_indices()
         x = x - x[:, i0:i1].mean(axis=1, keepdims=True)
     return np.ascontiguousarray(x)
+
+
+def is_rank_deficient(epoch) -> bool:
+    """True when the channels of a preprocessed epoch (n_channels, n_times) are linearly dependent,
+    so the classifier cannot score it (see RANK_TOLERANCE)."""
+    x = np.asarray(epoch, dtype=np.float64)
+    x = x - x.mean(axis=1, keepdims=True)
+    w = np.linalg.eigvalsh((x @ x.T) / x.shape[1])
+    return not (w[-1] > 0 and w[0] > RANK_TOLERANCE * w[-1])
 
 
 def extract_epoch(timestamps, data, onset: float,

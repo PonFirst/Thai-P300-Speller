@@ -205,6 +205,190 @@ def test_cli_prints_and_writes_json(tmp_path, capsys):
     assert written["inference"]["n_scored"] == 2 and written["session"]["session_id"] == "s1"
 
 
+# ---------------------------------------------------------------------------
+# findings
+# ---------------------------------------------------------------------------
+
+def _exp(records, *, session=None, fit_report=None, seconds_per_flash=0.1):
+    return {"session": session, "fit_report": fit_report, "fit_report_path": None,
+           "inference_log": "x.jsonl", "unparseable_log_lines": 0,
+           "inference": sx.summarize_inference(records, seconds_per_flash=seconds_per_flash)}
+
+
+def test_findings_flag_a_demo_session_first():
+    kinds = [f["kind"] for f in sx.build_findings(_exp(flat(trial(1)), session={"demo": True}))]
+    assert kinds[0] == "caution"
+    assert not any(f["kind"] == "caution" and "demo" in f["text"].lower()
+                  for f in sx.build_findings(_exp(flat(trial(1)), session={"demo": False})))
+
+
+def test_findings_report_accuracy_against_chance_and_flag_small_n():
+    records = flat(*[trial(i, n=10) for i in range(1, 5)])   # only 4 scored: n < 30
+    findings = sx.build_findings(_exp(records))
+    text = " | ".join(f["text"] for f in findings)
+    assert "100.0%" in text and "chance rate" in text
+    assert any(f["kind"] == "caution" and "Only 4 characters" in f["text"] for f in findings)
+    assert any("bits/min" in f["text"] for f in findings)
+
+
+def test_findings_report_the_lm_effect_when_present_and_omit_it_when_absent():
+    records = flat(trial(1, prior=0.9, rank=1, n=8), trial(2, prior=0.02, rank=9, n=30))
+    findings = sx.build_findings(_exp(records))
+    text = " | ".join(f["text"] for f in findings)
+    assert "ranked the true next character 1st for 1/2" in text
+    assert "took 8.0 flashes on average" in text
+
+    no_target = sx.build_findings(_exp(flat(trial(1, with_target=False))))
+    assert not any("ranked the true next character" in f["text"] for f in no_target)
+
+
+def test_findings_report_stop_reason_mix_and_rejected_flashes():
+    records = flat(trial(1, reason="threshold_crossed"), trial(2, reason="threshold_crossed"),
+                   trial(3, reason="max_flashes_reached", rejected=["quality_gate"]))
+    findings = sx.build_findings(_exp(records))
+    text = " | ".join(f["text"] for f in findings)
+    assert "2/3 characters (66.7%) stopped because" in text
+    assert "1 flashes were rejected" in text and "quality_gate 1" in text
+
+
+def test_findings_never_crash_on_a_session_with_nothing_scored():
+    findings = sx.build_findings(_exp(flat(trial(1, with_target=False, commit=None))))
+    assert isinstance(findings, list)   # no accuracy/ITR/LM findings possible; must not raise
+
+
+# ---------------------------------------------------------------------------
+# SVG chart helpers
+# ---------------------------------------------------------------------------
+
+def test_hbar_chart_places_the_reference_line_and_escapes_labels():
+    svg = sx._svg_hbar_with_reference(
+        [("A & B", 0.5, "#111"), ("<script>", 0.8, "#222")],
+        reference=0.25, reference_label="chance (25.0%)")
+    assert svg.startswith("<svg") and svg.endswith("</svg>")
+    assert "A &amp; B" in svg and "&lt;script&gt;" in svg and "<script>" not in svg
+    assert "50.0%" in svg and "80.0%" in svg and "chance (25.0%)" in svg
+    assert 'stroke-dasharray="4 3"' in svg   # the reference line is dashed, not a plain bar
+
+
+def test_hbar_chart_without_a_reference_omits_the_dashed_line():
+    svg = sx._svg_hbar_with_reference([("A", 1.0, "#111")])
+    assert "stroke-dasharray" not in svg
+
+
+def test_hbar_chart_handles_no_rows():
+    assert "No data" in sx._svg_hbar_with_reference([])
+
+
+def test_per_character_chart_colors_by_correctness_and_marks_the_mean():
+    trials = [
+        {"reason": "threshold_crossed", "n_flashes": 10, "correct": True, "target_char": "ก", "committed_char": "ก"},
+        {"reason": "threshold_crossed", "n_flashes": 20, "correct": False, "target_char": "ข", "committed_char": "ค"},
+        {"reason": "trial_ended", "n_flashes": 5, "correct": None, "target_char": None, "committed_char": "ง"},
+        {"reason": None, "n_flashes": 0, "correct": None, "target_char": None, "committed_char": None},   # never committed
+    ]
+    svg = sx._svg_per_character_chart(trials)
+    assert svg.count("<rect") == 3          # the uncommitted trial is not drawn
+    assert 'fill="#1e7f72"' in svg and 'fill="#b91c1c"' in svg and 'fill="#94a3b8"' in svg
+    assert "mean 11.7" in svg               # (10+20+5)/3
+
+
+def test_per_character_chart_handles_no_committed_trials():
+    assert "No committed characters" in sx._svg_per_character_chart([{"reason": None, "n_flashes": 0}])
+
+
+# ---------------------------------------------------------------------------
+# benchmark table
+# ---------------------------------------------------------------------------
+
+BENCHMARK = {
+    "models": {
+        "old_transformer": {"label": "Old transformer", "n_params": 878867, "top1_accuracy": 0.6875,
+                            "top3_accuracy": 0.9375, "mean_surprisal_bits": 1.178,
+                            "latency_ms": {"mean_ms": 2.03}},
+        "new_transformer": {"label": "New transformer", "n_params": 5602941, "top1_accuracy": 0.8125,
+                            "top3_accuracy": 1.0, "mean_surprisal_bits": 0.633,
+                            "latency_ms": {"mean_ms": 6.70}},
+        "ngram": {"label": "N-gram", "n_context_entries": 125665, "top1_accuracy": 0.75,
+                 "top3_accuracy": 1.0, "mean_surprisal_bits": 0.955, "latency_ms": {"mean_ms": 0.008}},
+    }
+}
+
+
+def test_load_benchmark_missing_file_returns_none(tmp_path):
+    assert sx.load_benchmark(tmp_path / "nope.json") is None
+
+
+def test_load_benchmark_reads_the_real_file_shipped_in_the_repo():
+    # stopping/model_comparison.py's own output, if it's been run -- exercises the real default path
+    data = sx.load_benchmark(sx.DEFAULT_BENCHMARK_PATH)
+    if data is not None:
+        assert "models" in data
+
+
+def test_benchmark_table_highlights_new_transformer_not_old_for_a_transformer_session():
+    html = sx._benchmark_table_html(BENCHMARK, "transformer")
+    assert html.count('class="this-session"') == 1
+    assert 'this-session">New transformer' not in html or "New transformer &larr;" in html
+    assert "New transformer &larr; this session" in html
+    assert "Old transformer &larr;" not in html
+
+
+def test_benchmark_table_highlights_ngram_for_an_ngram_session():
+    html = sx._benchmark_table_html(BENCHMARK, "ngram")
+    assert html.count('class="this-session"') == 1 and "N-gram &larr; this session" in html
+
+
+def test_benchmark_table_highlights_nothing_for_uniform_or_unknown():
+    for lm_type in ("uniform", None, "bogus"):
+        html = sx._benchmark_table_html(BENCHMARK, lm_type)
+        assert html.count('class="this-session"') == 0
+
+
+def test_benchmark_table_empty_models_gives_empty_string():
+    assert sx._benchmark_table_html({"models": {}}, "transformer") == ""
+
+
+# ---------------------------------------------------------------------------
+# full HTML report
+# ---------------------------------------------------------------------------
+
+def test_html_report_is_well_formed_and_includes_every_section(tmp_path):
+    rec = _experiment(tmp_path)
+    exp = sx.load_experiment(recording=rec)
+    html = sx.build_html_report(exp, benchmark=BENCHMARK)
+    assert html.startswith("<!doctype html>") and html.rstrip().endswith("</html>")
+    assert html.count("<svg") >= 2                       # accuracy chart + per-character chart
+    assert "Key findings" in html and "class=\"finding" in html
+    assert "out-of-fold AUC 0.830" in html or "0.830" in html   # classifier section present
+    assert "Compared with other language models" in html
+    assert "กขค" in html                                  # the calibration sentence, real Thai text, unescaped-safe
+
+
+def test_html_report_omits_sections_with_no_data(tmp_path):
+    rec = _experiment(tmp_path, with_fit_report=False)
+    exp = sx.load_experiment(recording=rec)
+    html = sx.build_html_report(exp, benchmark=None)
+    assert "Classifier training" not in html
+    assert "Compared with other language models" not in html
+
+
+def test_html_report_never_crashes_on_a_log_with_no_scored_characters(tmp_path):
+    log = tmp_path / "svc.log.jsonl"
+    _write_jsonl(log, trial(1, with_target=False))
+    exp = sx.load_experiment(inference_log=log)
+    html = sx.build_html_report(exp, benchmark=None)
+    assert html.startswith("<!doctype html>")
+
+
+def test_cli_writes_the_html_report(tmp_path, capsys):
+    rec = _experiment(tmp_path)
+    out = tmp_path / "report.html"
+    assert sx.main(["--recording", str(rec), "--html", str(out), "--benchmark", str(tmp_path / "missing.json")]) == 0
+    assert "HTML report written" in capsys.readouterr().out
+    html = out.read_text(encoding="utf-8")
+    assert html.startswith("<!doctype html>") and "Compared with other language models" not in html
+
+
 def test_inference_log_alone_needs_no_session(tmp_path, capsys):
     log = tmp_path / "svc.log.jsonl"
     _write_jsonl(log, trial(1, n=10))

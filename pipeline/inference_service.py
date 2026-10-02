@@ -91,7 +91,7 @@ from pipeline.classifier_io import (CheckpointMismatchError, channels_for_compat
                                     version_warnings)
 from pipeline.constants import (EEG_INLET_DEJITTER, EEG_STREAM_TYPE, INFERENCE_FINGERPRINT_KEY,
                                 INFERENCE_STREAM_NAME, INFERENCE_STREAM_TYPE, MARKER_STREAM_TYPE)
-from pipeline.epoching import NOT_YET_AVAILABLE, EpochSpec, extract_epoch
+from pipeline.epoching import NOT_YET_AVAILABLE, EpochSpec, extract_epoch, is_rank_deficient
 from pipeline.experiment_log import sig_floats
 from pipeline.language_model import build_language_model, validate_prior
 from pipeline.manifest import (load_calibration_file, load_characters_file, load_manifest,
@@ -460,6 +460,12 @@ class InferenceEngine:
                 trial.warned_bad_channels = True
                 self._warn(f"trial {tid}: bad channels {list(decision.bad_channels)} accepted under the "
                            "'warn' quality-gate policy")
+        if is_rank_deficient(epoch):
+            # Linearly dependent channels (e.g. bridged electrodes the gate can't see): the covariance is
+            # singular, and the classifier would raise or return an arbitrary score.
+            self.log.warning("flash %s of trial %s: channels are linearly dependent; not scored", idx, tid)
+            self._reject(tid, idx, ev.REJECT_INVALID_SCORE, [])
+            return
         score = float(self.scorer(epoch))
         if not math.isfinite(score):
             self.log.warning("flash %s of trial %s: classifier score %r", idx, tid, score)

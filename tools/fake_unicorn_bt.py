@@ -47,13 +47,16 @@ class FakeUnicorn:
 
     def __init__(self, host="127.0.0.1", port=0, *, signal=None, rate_hz=up.UNICORN_SFREQ, n_samples=None,
                  drop=(), garbage=None, burst=1, synthetic=True, counter_start=0, send_ack=True,
-                 close_after=None, silent_after=None):
+                 close_after=None, silent_after=None, reconnect=False):
         self.signal = signal or noise_signal()
         self.rate_hz, self.n_samples = rate_hz, n_samples
         self.drop = drop if callable(drop) else set(drop).__contains__
         self.garbage, self.burst = dict(garbage or {}), max(1, burst)
         self.synthetic, self.counter_start, self.send_ack = synthetic, counter_start, send_ack
         self.close_after, self.silent_after = close_after, silent_after
+        # reconnect: serve connection after connection (BCI2000's UnicornSerialSource reconnects on every
+        # Set config, as it would reopen the real headset's port); otherwise one connection only.
+        self.reconnect = reconnect
         self.commands: list[bytes] = []
         self.sent = 0
         self._server = socket.socket()
@@ -78,6 +81,11 @@ class FakeUnicorn:
             self._thread.join(timeout=3)
 
     def _serve(self) -> None:
+        self._serve_one()
+        while self.reconnect and not self._stop.is_set():
+            self._serve_one()
+
+    def _serve_one(self) -> None:
         try:
             conn, _ = self._server.accept()
         except OSError:
@@ -171,7 +179,7 @@ def main(argv=None) -> int:
     p.add_argument("--drop-every", type=int, default=0, help="drop one packet in every N (0: none)")
     args = p.parse_args(argv)
     every = args.drop_every
-    server = FakeUnicorn(args.host, args.port, burst=args.burst,
+    server = FakeUnicorn(args.host, args.port, burst=args.burst, reconnect=True,
                          drop=(lambda k: k % every == every - 1) if every > 0 else ()).start()
     print("=" * 72)
     print(f"FAKE UNICORN on {server.host}:{server.port} -- SYNTHETIC DATA, not a brain.")

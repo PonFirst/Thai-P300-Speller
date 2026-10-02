@@ -7,6 +7,13 @@ session, and write the session manifest that every process loads.
         [--lm-corpus corpus.txt | --lm-transformer-checkpoint checkpoint.pt] \\
         [--allow-demo] [--force] [--n-splits 5] [--characters PATH]
 
+The recording is either a recorder CSV (the Python/LSL stack) or a BCI2000 .dat written by the
+CheckerboardSpeller (pipeline/bci2000_recording.py: onsets from StimulusCode, labels from
+StimulusType, selections as trials, lost Bluetooth samples rejected). A .dat fit also writes
+models/<id>_bci2000.prm, the model for BCI2000's CheckerboardSignalProcessing
+(pipeline/bci2000_export.py). Synthetic .dat data (the fake headset's gyroscope pattern) counts
+as demo data.
+
 Steps:
   1. Load the recorder CSV. Rows whose 8 channels are all finite form the
      continuous EEG; anything else (gap rows, marker rows inside a gap) is
@@ -58,10 +65,14 @@ import pandas as pd
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import GroupKFold
 
+from collection.unicorn_protocol import SYNTHETIC_GYRO_COUNTS  # the fake headset's gyroscope marker
+from pipeline import bci2000_export
 from pipeline import experiment_log as xlog
+from pipeline.bci2000_dat import DatError, read_dat
+from pipeline.bci2000_recording import RecordingError, counter_breaks, eeg_microvolts, flash_events
 from pipeline.classifier_io import CheckpointError, library_versions, load_build_pipeline, save_checkpoint
-from pipeline.constants import EEG_CHANNELS
-from pipeline.epoching import EpochSpec, extract_epochs
+from pipeline.constants import EEG_CHANNELS, EEG_SFREQ
+from pipeline.epoching import RANK_DEFICIENT, EpochSpec, extract_epochs, is_rank_deficient
 from pipeline.language_model import LanguageModelError
 from pipeline.manifest import (CALIBRATION_FORMAT, REPO_ROOT, SCORE_METHOD, ManifestError,
                                build_manifest_dict, load_characters_file, sha256_file, write_manifest)
@@ -76,6 +87,7 @@ MIN_NONTARGET_EPOCHS = 10
 # Median |sample| below this is volts, not microvolts (CLAUDE.md gotcha 1).
 MIN_PLAUSIBLE_MEDIAN_ABS_UV = 1e-3
 REQUIRED_COLUMNS = ["timestamp", *EEG_CHANNELS, "marker_json_or_empty"]
+BCI2000_SUFFIX = ".dat"
 _SUBJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
@@ -102,6 +114,8 @@ class Recording:
     n_non_eeg_rows: int
     n_malformed_markers: int
     n_duplicate_flashes: int
+    kind: str = "csv"                      # "csv" | "bci2000"
+    bci2000: dict | None = None            # what the .dat says about its session, for the fit report
 
 
 @dataclass
@@ -123,16 +137,84 @@ class FitResult:
     fingerprint: str
     warnings: list = field(default_factory=list)
     report_path: Path | None = None
+    bci2000_prm_path: Path | None = None
 
 
 def _is_int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def is_bci2000(path) -> bool:
+    return Path(path).suffix.lower() == BCI2000_SUFFIX
+
+
+REAL_SOURCE_FILTER = "UnicornSerialADC"
+
+
+def dat_synthetic_reason(dat) -> str | None:
+    """
+    None only when the recording proves it came from the real headset: the source module was
+    UnicornSerialSource reading the Bluetooth port (no TcpAddress), and the gyroscope states don't
+    carry the fake headset's marker (0x5A5A on all three axes). Anything else -- the fake headset, a
+    simulated BCI2000 source, missing evidence -- is synthetic: CLAUDE.md, synthetic data must
+    identify itself, and absence of evidence doesn't count as real.
+    """
+    chain = dat.params.get("SignalSourceFilterChain")
+    filters = [row[0] for row in chain.value] if chain is not None and chain.type == "matrix" else []
+    if REAL_SOURCE_FILTER not in filters:
+        return f"its source was {', '.join(f for f in filters if f != 'DataIOFilter') or 'not recorded'}, not the headset"
+    if "TcpAddress" in dat.params and dat.param_str("TcpAddress").strip():
+        return f"the source read TcpAddress {dat.param_str('TcpAddress')} (the fake headset), not the Bluetooth port"
+    if not all(f"Gyroscope{a}" in dat.states for a in "XYZ"):
+        return "it has no gyroscope states"
+    if dat.n_samples and all(bool(np.all(dat.state(f"Gyroscope{a}") == g))
+                             for a, g in zip("XYZ", SYNTHETIC_GYRO_COUNTS)):
+        return "its gyroscope states carry the fake headset's marker"
+    return None
+
+
+def dat_is_synthetic(dat) -> bool:
+    return dat_synthetic_reason(dat) is not None
+
+
+def load_bci2000_recording(path, dat=None) -> Recording:
+    path = Path(path)
+    try:
+        dat = dat if dat is not None else read_dat(path)
+        flashes_dat = flash_events(dat)
+    except (DatError, RecordingError) as exc:
+        raise FitError(str(exc)) from exc
+    data = eeg_microvolts(dat)
+    lost = int((~np.all(np.isfinite(data), axis=1)).sum())
+    flashes = [FlashMarker(trial_id=f.selection, flash_idx=f.code, onset=f.onset / EEG_SFREQ, is_target=f.is_target)
+               for f in flashes_dat]
+    breaks = counter_breaks(dat)
+    meta = {
+        "text_to_spell": dat.param_str("TextToSpell") if "TextToSpell" in dat.params else None,
+        "synthetic_reason": dat_synthetic_reason(dat),
+        "counter_breaks": int(len(breaks)),
+        "truncated_tail_bytes": int(dat.truncated_tail_bytes),
+        "n_selections": len({f.selection for f in flashes_dat}),
+        "n_samples": dat.n_samples, "lost_samples": lost,
+        "synthetic": dat_is_synthetic(dat),
+        "subject": dat.param_str("SubjectName") if "SubjectName" in dat.params else None,
+        "session": dat.param_str("SubjectSession") if "SubjectSession" in dat.params else None,
+        "run": dat.param_str("SubjectRun") if "SubjectRun" in dat.params else None,
+        "number_of_sequences": dat.param_str("NumberOfSequences") if "NumberOfSequences" in dat.params else None,
+        "stimulus_duration": dat.param_str("StimulusDuration") if "StimulusDuration" in dat.params else None,
+        "isi": dat.param_str("ISIMinDuration") if "ISIMinDuration" in dat.params else None,
+    }
+    return Recording(path=path, sha256=sha256_file(path), timestamps=np.arange(dat.n_samples) / EEG_SFREQ,
+                     data=data, flashes=flashes, n_rows=dat.n_samples, n_non_eeg_rows=lost,
+                     n_malformed_markers=0, n_duplicate_flashes=0, kind="bci2000", bci2000=meta)
+
+
 def load_recording(path) -> Recording:
     path = Path(path)
     if not path.is_file():
         raise FitError(f"recording not found: {path}")
+    if is_bci2000(path):
+        return load_bci2000_recording(path)
     try:
         df = pd.read_csv(path, dtype={"marker_json_or_empty": str}, low_memory=False)
     except (OSError, ValueError, pd.errors.ParserError) as exc:
@@ -176,14 +258,16 @@ def load_recording(path) -> Recording:
 
 
 def output_paths(recording_path, subject_id: str, models_dir, manifest_path=None,
-                 allow_demo: bool = False) -> tuple[bool, Path, Path, Path]:
-    """(is_demo, checkpoint, calibration, manifest). Raises FitError for a refused demo recording."""
+                 allow_demo: bool = False, synthetic: str | None = None) -> tuple[bool, Path, Path, Path]:
+    """(is_demo, checkpoint, calibration, manifest). Raises FitError for a refused demo recording.
+    synthetic: why the recording itself says it is synthetic (a .dat not from the real headset), or None."""
     if not _SUBJECT_ID_RE.match(subject_id or ""):
         raise FitError(f"--id {subject_id!r} must be letters, digits, '_', '.', '-' (a safe filename)")
-    demo = Path(recording_path).name.startswith(DEMO_PREFIX)
+    demo = Path(recording_path).name.startswith(DEMO_PREFIX) or bool(synthetic)
     if demo and not allow_demo:
+        why = synthetic if synthetic else "demo_ prefix"
         raise FitError(
-            f"recording {Path(recording_path).name} is synthetic (demo_ prefix); refusing to fit a "
+            f"recording {Path(recording_path).name} is synthetic ({why}); refusing to fit a "
             "model on it. Pass --allow-demo to fit anyway; every artifact will be prefixed demo_.")
     prefix = DEMO_PREFIX if demo else ""
     stem = subject_id if subject_id.startswith(prefix) else prefix + subject_id
@@ -194,6 +278,13 @@ def output_paths(recording_path, subject_id: str, models_dir, manifest_path=None
         models_dir = REPO_ROOT / models_dir
     manifest = Path(manifest_path) if manifest_path is not None else REPO_ROOT / (prefix + DEFAULT_MANIFEST_NAME)
     return (demo, models_dir / f"{stem}_classifier.joblib", models_dir / f"{stem}_platt.json", manifest)
+
+
+def bci2000_prm_path(checkpoint_path) -> Path:
+    """models/<stem>_classifier.joblib -> models/<stem>_bci2000.prm"""
+    p = Path(checkpoint_path)
+    stem = p.name[:-len("_classifier.joblib")] if p.name.endswith("_classifier.joblib") else p.stem
+    return p.with_name(f"{stem}_bci2000.prm")
 
 
 def _write_json_atomic(data: dict, path: Path) -> None:
@@ -239,8 +330,20 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
                        force: bool = False, n_splits: int = 5, characters_path=DEFAULT_CHARACTERS_PATH,
                        log: Callable[[str], None] = print) -> FitResult:
     recording = Path(recording)
-    demo, ckpt_path, cal_path, man_path = output_paths(recording, subject_id, models_dir,
-                                                       manifest_path, allow_demo)
+    dat = None
+    if is_bci2000(recording):
+        if not recording.is_file():
+            raise FitError(f"recording not found: {recording}")
+        try:
+            dat = read_dat(recording)
+        except DatError as exc:
+            raise FitError(str(exc)) from exc
+    demo, ckpt_path, cal_path, man_path = output_paths(recording, subject_id, models_dir, manifest_path, allow_demo,
+                                                       synthetic=dat_synthetic_reason(dat) if dat is not None else None)
+    # Every fit owns <stem>_bci2000.prm: a .dat fit writes it; a CSV fit removes an old one (under --force),
+    # which would otherwise sit beside the new checkpoint and load the previous model into BCI2000.
+    prm_path = bci2000_prm_path(ckpt_path)
+    writes_prm = dat is not None
     warnings = []
     console: list[str] = []  # everything logged below, kept for the fit report
     t_start = time.monotonic()
@@ -252,7 +355,7 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
     report_path = xlog.fit_report_path(ckpt_path)
     if demo and manifest_path is not None and not man_path.name.startswith(DEMO_PREFIX):
         warnings.append(f"demo recording, but --manifest {man_path} is not demo_-prefixed")
-    existing = [str(p) for p in (ckpt_path, cal_path, man_path, report_path) if p.exists()]
+    existing = [str(p) for p in (ckpt_path, cal_path, man_path, report_path, prm_path) if p.exists()]
     if existing and not force:
         raise FitError(f"refusing to overwrite existing artifact(s) {existing}; pass --force to replace them")
     if n_splits < 2:
@@ -265,21 +368,34 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
     if lm_transformer_checkpoint is not None and not Path(lm_transformer_checkpoint).is_file():
         raise FitError(f"--lm-transformer-checkpoint not found: {lm_transformer_checkpoint}")
 
-    rec = load_recording(recording)
+    rec = load_bci2000_recording(recording, dat) if dat is not None else load_recording(recording)
     emit(f"loaded {rec.path.name}: {rec.n_rows} rows, {len(rec.timestamps)} EEG samples, "
          f"{rec.n_non_eeg_rows} non-EEG rows, {len(rec.flashes)} flash markers"
          + (f", {rec.n_malformed_markers} malformed markers" if rec.n_malformed_markers else "")
          + (f", {rec.n_duplicate_flashes} duplicate flashes ignored" if rec.n_duplicate_flashes else ""))
     if len(rec.timestamps) == 0 or not rec.flashes:
         raise FitError(f"recording {rec.path}: no EEG samples or no flash markers")
-    median_abs = float(np.median(np.abs(rec.data)))
+    finite_rows = np.all(np.isfinite(rec.data), axis=1)
+    if not finite_rows.any():
+        raise FitError(f"recording {rec.path}: no valid EEG samples")
+    median_abs = float(np.median(np.abs(rec.data[finite_rows])))
     if median_abs < MIN_PLAUSIBLE_MEDIAN_ABS_UV:
         raise FitError(f"recording {rec.path}: median |sample| is {median_abs:.3g}; that is volts, not "
                        "microvolts (CLAUDE.md gotcha 1)")
 
     spec = EpochSpec()
     X, kept, reasons = extract_epochs(rec.timestamps, rec.data, [f.onset for f in rec.flashes], spec)
-    rejected = dict(Counter(r for r in reasons if r is not None))
+    # Linearly dependent channels make the covariance singular: no score exists, so neither fit nor serve.
+    usable = np.array([not is_rank_deficient(e) for e in X], dtype=bool)
+    if not usable.all():
+        idx = np.flatnonzero(kept)
+        for j in np.flatnonzero(~usable):
+            kept[idx[j]] = False
+            reasons[idx[j]] = RANK_DEFICIENT
+        X = X[usable]
+    # In a .dat the only non-finite samples are the ones the source filled in for lost packets.
+    rename = {"non_finite": "lost_samples"} if rec.kind == "bci2000" else {}
+    rejected = dict(Counter(rename.get(r, r) for r in reasons if r is not None))
     flashes = [f for f, k in zip(rec.flashes, kept) if k]
     y = np.array([int(f.is_target) for f in flashes], dtype=int)
     groups = np.array([f.trial_id for f in flashes], dtype=int)
@@ -311,6 +427,18 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
         "n_targets": n_targets, "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source_recording_sha256": rec.sha256,
     }, cal_path)
+    if writes_prm:
+        # Before the manifest: a failed export must not leave a new manifest beside an old model file.
+        try:
+            bci2000_export.export_prm(ckpt_path, cal_path, prm_path, {
+                "recording": rec.path.name, "recording_sha256": rec.sha256, "subject_id": subject_id,
+                "demo": demo, "n_epochs": int(len(y)), "n_targets": n_targets, "out_of_fold_auc": round(auc, 4)})
+        except bci2000_export.ExportError as exc:
+            raise FitError(f"BCI2000 export: {exc}") from exc
+        emit(f"BCI2000 classifier parameters: {prm_path}")
+    elif prm_path.exists():
+        prm_path.unlink()          # --force refit from a CSV: the old BCI2000 model is no longer this subject's
+        emit(f"removed the previous BCI2000 model {prm_path} (this fit is from a CSV recording)")
     if lm_corpus is not None:
         lm = {"type": "ngram", "corpus_path": Path(lm_corpus)}
     elif lm_transformer_checkpoint is not None:
@@ -336,6 +464,8 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
                 "n_flash_markers": len(rec.flashes), "n_malformed_markers": rec.n_malformed_markers,
                 "n_duplicate_flashes": rec.n_duplicate_flashes,
                 "integrity": xlog.read_json_if_exists(xlog.integrity_path(recording)),
+                "kind": rec.kind,
+                "bci2000": rec.bci2000,
             },
             # <recording>.session.json: the calibration sentence and settings; None for a recording
             # made before session records existed, or moved away from its sidecars.
@@ -352,6 +482,8 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
                 "classifier": {"path": Path(ckpt_path).as_posix(), "sha256": sha256_file(ckpt_path)},
                 "calibration": {"path": Path(cal_path).as_posix(), "sha256": sha256_file(cal_path)},
                 "manifest": {"path": manifest.path.as_posix(), "fingerprint": manifest.fingerprint},
+                "bci2000_parameters": ({"path": Path(prm_path).as_posix(), "sha256": sha256_file(prm_path)}
+                                       if writes_prm else None),
             },
             "language_model": manifest.lm_config,
             "versions": library_versions(),
@@ -366,7 +498,7 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
                      n_trials=int(n_trials), rejected=rejected, n_splits=k, auc=auc, a=float(a), b=float(b),
                      ece=float(ece), checkpoint_path=ckpt_path, calibration_path=cal_path,
                      manifest_path=manifest.path, fingerprint=manifest.fingerprint, warnings=warnings,
-                     report_path=report_path)
+                     report_path=report_path, bci2000_prm_path=prm_path if writes_prm else None)
 
 
 def format_summary(result: FitResult) -> str:
@@ -383,6 +515,8 @@ def format_summary(result: FitResult) -> str:
         f"  fingerprint      {result.fingerprint}",
         f"  fit report       {result.report_path}",
     ]
+    if result.bci2000_prm_path is not None:
+        lines.append(f"  BCI2000 model    {result.bci2000_prm_path}  (load in Config with CheckerboardSignalProcessing)")
     lines += [f"  warning          {w}" for w in result.warnings]
     return "\n".join(lines)
 
@@ -390,7 +524,7 @@ def format_summary(result: FitResult) -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Fit classifier + Platt calibration from a recording "
                                                  "and write the session manifest.")
-    parser.add_argument("--recording", required=True, help="recorder CSV")
+    parser.add_argument("--recording", required=True, help="recorder CSV, or a BCI2000 .dat from CheckerboardSpeller")
     parser.add_argument("--id", required=True, dest="subject_id", help="subject id used in artifact names")
     parser.add_argument("--models-dir", default="models",
                         help="checkpoint and calibration directory; a relative path resolves against the repo root")
@@ -412,7 +546,7 @@ def main(argv=None) -> int:
                                     lm_transformer_checkpoint=args.lm_transformer_checkpoint,
                                     allow_demo=args.allow_demo, force=args.force, n_splits=args.n_splits,
                                     characters_path=args.characters)
-    except (FitError, ManifestError, CheckpointError, LanguageModelError) as exc:
+    except (FitError, ManifestError, CheckpointError, LanguageModelError, bci2000_export.ExportError) as exc:
         print(f"fit_from_recording: error: {exc}", file=sys.stderr)
         return 2
     print(format_summary(result))

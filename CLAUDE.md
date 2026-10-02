@@ -21,9 +21,11 @@ PhD application portfolio work (targeting CMU ECE/BME): a Thai-language P300 vis
 ## Hard constraints — do not relitigate
 
 - **Hardware path.**
-  - This repo is developed on an Apple M3 Mac. BrainFlow's Unicorn class is compiled out on macOS and g.tec's software is Windows-only, so nothing here uses BrainFlow or a g.tec SDK. The recorder, inference service, panel and stimulus are pure LSL consumers on every machine.
-  - **The Mac can now run real sessions, through this repo's own relay.** The owner's decision (they want the whole project to run on the Mac and accepted changing this constraint): `collection/unicorn_relay.py` reads the headset's Bluetooth serial port (`/dev/cu.UN-*`, the built-in radio; `--tcp` takes a Bumble `rfcomm_bridge` for a USB dongle) using g.tec's documented protocol (`collection/unicorn_protocol.py`, from UnicornBluetoothProtocol.pdf) and publishes the same `UnicornEEG` stream the Unicorn LSL Interface does. **It has not been run against a real headset.** It is tested only against a protocol-accurate fake, a pty and the real recorder, so treat Mac sessions as unproven until TESTING.md H12–H14 pass (H12, the 30-minute counter-gap test, first). Do not describe the Mac path as working on real hardware before then.
-  - **Windows remains supported:** one machine running g.tec's Unicorn LSL Interface, `record_session.py`, `pipeline/inference_service.py`, `collection/session_gui_qt.py` and the stimulus together. This replaced an earlier Mac+VM / Mac+Linux-box split. Every process already resolves LSL streams by type, never by hostname, so this was a deployment simplification, not an architecture change — don't reintroduce network-hop assumptions (a hardcoded remote host, a timeout padded for a network round-trip, multicast-segment caveats) now that everything resolves on localhost. The old split-machine setup still works unchanged if ever needed again; it's just no longer the documented primary path.
+  - **Mac only, never Windows (owner, 2026-10-01).** Don't propose Windows for development, sessions or as a fallback. The goal is that the Mac works as correctly as a Windows setup would. Windows-specific files (`setup_windows.sh`, `WINDOWS_SETUP.md`, `SETUP.txt`) are legacy.
+  - **Moving to BCI2000 (owner's professor, 2026-10-01).** The professor rejected the custom acquisition and stimulus stack; the project is being rebuilt on BCI2000, which is a source build at `~/BCI2000/trunk`. Custom logic is ported to C++ BCI2000 modules in `bci2000/` (owner authorized the C++ conversion). Each port is tested against its Python original as the reference. Until the port is done, the existing Python stack still works, but it is not the study's path.
+  - **Headset → BCI2000 on the Mac: `bci2000/UnicornSerialSource`.** It stands in for BCI2000's `gUnicornADC`, which needs g.tec's Windows-only `Unicorn.dll`. It reads `/dev/cu.UN-*` using g.tec's documented protocol and fills lost packets so BCI2000's sample-count clock stays aligned (`Validation = 0` on filled samples). Tested against the protocol-accurate fake through real BCI2000 (`tests/test_bci2000_unicorn_source.py`); **not yet run against the real headset.** BCI2000's stock `LSLSource` is built too, but it discards LSL timestamps and does no gap filling, so don't use it with the relay for recordings.
+  - BrainFlow's Unicorn class is compiled out on macOS, so nothing here uses BrainFlow or a g.tec SDK.
+  - **The Python relay** (`collection/unicorn_relay.py` → LSL `UnicornEEG`) serves the pre-BCI2000 stack. With the real headset on 2026-09-30 it passed H1 and H4 (2 min: 0 non-monotonic steps, 250.05 Hz, 3 gaps totalling 114 samples in one 1.5 s burst). H12–H14 are still open.
   - Never suggest `pip install brainflow`.
 - **The core stopping math is owner-implemented and now done.** `BayesianStoppingController.reset()`, `.llr()`, `.update()` were filled in by hand (blend-with-uniform-floor prior, Platt-scaled LLR with the pi correction term, group-only log-domain update + fixed-threshold stop) and are verified against a hand-worked toy example in `tests/test_bayesian_stopping.py`.
   - Never implement, rewrite, or "fix" them without an explicit ask — that protection doesn't end just because they're filled in now.
@@ -68,9 +70,18 @@ PhD application portfolio work (targeting CMU ECE/BME): a Thai-language P300 vis
 ## Repo map
 
 ```
+bci2000/                         this project's BCI2000 modules (C++), symlinked to ~/BCI2000/trunk/src/custom;
+                                 README.md has build/run steps
+  UnicornSerialSource/           headset source module for macOS: UnicornProtocol (port of unicorn_protocol.py),
+                                 ByteSource (serial/TCP), UnicornSerialADC (BufferedADC, gUnicornADC-compatible)
+  CheckerboardSpeller/           application module: CheckerboardSequence.h (port of flash_sequence.py),
+                                 CheckerboardSpellerTask (StimulusTask; per-flash codes, FlashChar1-6 states)
+  CheckerboardSignalProcessing/  SP module: RiemannP300Classifier (epochs + sosfiltfilt + xDAWNcov/TS/LDA per flash,
+                                 RiemannP300Math.h = Eigen port of pipeline/bci2000_export.reference_score)
+  parms/ThaiCheckerboard.prm     GENERATED by tools/make_bci2000_parms.py from characters_th.json
 start_speller.sh                 ./start_speller.sh [--demo] [--manifest PATH] -> Qt panel
-setup_windows.sh                 one-time env setup on a fresh Windows machine: conda env, deps, import checks
-WINDOWS_SETUP.md                 plain-language walkthrough for setup_windows.sh + headset pairing on Windows
+setup_windows.sh                 LEGACY (Mac only now): Windows env setup
+WINDOWS_SETUP.md                 LEGACY (Mac only now): Windows walkthrough
 collection/
   session_gui_qt.py              PySide6 panel: traces, scalp map, target entry, settings, composed text,
                                  confidence gauge; launches service -> recorder -> stimulus
@@ -95,6 +106,9 @@ pipeline/
   fit_from_recording.py          calibration CSV -> classifier checkpoint + Platt calibration + manifest
                                  + fit report; --lm-corpus (ngram) | --lm-transformer-checkpoint (transformer)
   classifier_io.py               checkpoint save/load, stream compatibility, channel-label policy
+  bci2000_dat.py                 BCI2000 .dat reader (format 1.1), checked against BCI2000Tools.FileReader
+  bci2000_recording.py           CheckerboardSpeller .dat -> flashes (onset/label/selection), lost samples -> NaN
+  bci2000_export.py              fitted checkpoint -> BCI2000 .prm for CheckerboardSignalProcessing; reference_score()
   language_model.py              LM factory (uniform | ngram | transformer), prior validated at the boundary
 stopping/
   bayesian_stopping.py           log_normalize + controller: reset/llr/update, owner-implemented, done
@@ -128,6 +142,8 @@ $PY tools/fake_unicorn_bt.py --port 9000        # no headset: then  $PY collecti
 $PY collection/mock_headset.py --flat PO7 --noisy C4 --railed Oz      # exercise quality colours
 $PY -m pipeline.fit_from_recording --recording collection/recordings/<file>.csv --id subject_001 \
     --lm-transformer-checkpoint models/thai_gpt_checkpoint.pt     # omit the flag for the uniform LM; --lm-corpus for ngram
+$PY -m pipeline.fit_from_recording --recording <BCI2000 calibration>.dat --id subject_001   # also writes models/<id>_bci2000.prm
+bci2000/demo_speller.sh [--slow] [TEXT]         # BCI2000 speller with the fake headset (opens a window)
 $PY -m pipeline.inference_service --manifest session_manifest.json    # normally launched by the panel
 $PY -m stopping.summarize_experiment --recording collection/recordings/<test_session>.csv   # accuracy, ITR, LM effect
 $PY -m stopping.model_comparison                # old vs new Transformer vs n-gram (fits the n-gram: ~16 s)
@@ -184,6 +200,28 @@ QT_QPA_PLATFORM=offscreen $PY -m pytest tests/ -q
 24. **The relay's timestamps come from the device counter, not arrival.** Bluetooth bursts would otherwise smear ERPs (simulated: ~0.1 ms stamp error vs ~5 ms on arrival). A lost packet is a stamp jump that the recorder already detects, and `samples.missing` in the relay report is the true loss. The constant link delay is unmeasurable in software (H7, H14). Cost of the relay itself: ~7 µs per packet.
 25. **g.tec's protocol PDF has a typo:** its counter formula prints `Counter[1]` three times; the C example beside it (and `unicorn_protocol.py`) use bytes 0–3, little-endian. EEG is big-endian 24-bit; accelerometer, gyroscope and counter are little-endian.
 26. **Mac display timing (from the owner's research notes, measured on an M3 Max in a separate session; not re-verified in this repo).** Reported: steady flashing locks at 8.33 ms frames, so the PsychoPy stimulus's 62 ms waits round up to 66.7 ms flashes and a 133.3 ms SOA at both 60 and 120 Hz (the paradigm never ran at 62/124 ms on any machine); ProMotion's idle slowdown leaves the first flash after a static screen a few ms uncertain; the in-window Qt board keeps 124 ms, so **the two boards give different SOAs: calibrate and run online on the same board.** For sessions: fixed 60 Hz (System Settings → Displays; unmeasured), charger plugged in, "Separate window" board. `evaluate_recording` is unaffected because it measures time per flash from the recording's markers. Flip-to-light lag is still unknown (H7).
+
+27. **BCI2000 speller: one stimulus code per flash needs `SingleEpochMode = 1`.** The checkerboard reshuffles its groups every repetition, so `CheckerboardSpeller` numbers flashes 1..24×repetitions within each selection. Two things follow:
+    - **The bug this avoids:** BCI2000's `P3TemporalFilter` with `EpochsToAverage = 1` but `SingleEpochMode = 0` keeps counting each code's epochs across selections. It reports only when the count equals 1 and resets only at `NumberOfSequences`, so every other selection silently got zero classifier results (found in an end-to-end run). The parameter file sets it, and the module's preflight refuses to start otherwise.
+    - **Analysis:** the per-flash group lives in the `FlashChar1`–`FlashChar6` states (1-based character indices), not in the stimulus code.
+
+28. **BCI2000 scripts: pause between `Wait for Resting` and `Start`.** Parameter messages sent during configuration can still be queued when a script starts the run straight away. If one reaches a module that is already running, the module raises `Unexpected Param message` and the whole system shuts down; the script then reports `Wait aborted`.
+    - **Measured:** 2 of 6 demo runs failed this way; with `Sleep 2` before `Start`, 8 of 8 were clean. The demo script and the BCI2000 tests now include the pause. A person clicking Start in the Operator is slow enough not to hit it.
+    - **Also:** modules must not write parameters in `Initialize` (`gUnicornADC` writes `ID_Amp` there; `UnicornSerialSource` doesn't).
+    - **Diagnosis:** pass `--SystemLogFile=<path>` on the `Startup system` line to get the module errors.
+
+29. **BCI2000 classifier: train/serve parity by construction, not by retraining.** `CheckerboardSignalProcessing` doesn't use BCI2000's causal online filters. It cuts each flash's padded window and runs scipy's `sosfiltfilt` on it, exactly as `pipeline/epoching.py` does offline. Three consequences:
+    - **Results arrive late:** 1.3 s after each flash (0.8 s epoch plus 0.5 s pad).
+    - **`EpochLength` must cover that (1400 ms).** BCI2000's StimulusTask decides `EpochLength` after the last flash, and results arriving later were counted toward the next character: found in an end-to-end run, selection 1 decided on 39 of 48 results. The filter's preflight refuses a shorter value.
+    - **Onset alignment is identical online and in the `.dat` (measured).** The SP module sees `StimulusCode` at the same sample index the recording stores.
+30. **The BCI2000 path rejects exactly what the Python paths reject, and scores the rest identically.**
+    - **The quality gate:** `pipeline/quality.py`'s rule, ported in C++ with its thresholds exported into the model `.prm` (`RiemannQualityGate`).
+    - **Then the rank check:** `pipeline/epoching.is_rank_deficient`. Linearly dependent channels, such as bridged electrodes the gate can't see, make the covariance singular, and sklearn then raises or returns arbitrary scores.
+    - **Lost samples:** `Validation = 0`, plus the first sample after any device `Counter` break.
+    - **Applied by the service, `evaluate_recording`, the fit and the filter:** all four use this order. The service and `evaluate_recording` gained the rank check; before, a flat channel under the `warn` policy crashed the service.
+    - **Selection:** the speller selects the character with the highest **mean** score over its scored flashes. BCI2000's default **sum** counted a rejected flash as 0, which is not neutral for an LDA score and biased selections toward characters whose flashes were dropped.
+    - **What counts as real:** a `.dat` is real only if it proves it: source `UnicornSerialADC`, no `TcpAddress`, and gyroscope states without the fake's `0x5A5A`. Anything else is demo data.
+31. **BCI2000 parameter files: escape `{` and `}` in string values.** BCI2000 reads braces as list delimiters even inside a string, and an unescaped `{` in the exported JSON provenance swallowed the following parameter lines, leaving `RiemannChannels` empty. Both encoders (`bci2000_export._bci_encode`, `make_bci2000_parms.encode`) write them as `%7B` / `%7D`.
 
 ## Results so far (flash-level, subjects 1–5, GroupKFold by subject)
 

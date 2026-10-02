@@ -406,8 +406,11 @@ def test_quality_gate_flat_channel(policy, seed):
         assert_events(events, [REJ(0, 0, ev.REJECT_QUALITY_GATE, ["Pz"])])
         assert c.updates == [] and scorer.shapes == []
     else:
-        assert_events(events, [STATUS(ev.STATE_WARNING, "bad channels ['Pz']"), PU(0, 0, 0.5, 0)])
-        assert len(c.updates) == 1
+        # warn lets the flash past the gate, but a flat channel makes the channels linearly dependent:
+        # the real classifier's covariance is singular, so the flash is not scored either way.
+        assert_events(events, [STATUS(ev.STATE_WARNING, "bad channels ['Pz']"),
+                               REJ(0, 0, ev.REJECT_INVALID_SCORE, [])])
+        assert c.updates == [] and scorer.shapes == []
 
 
 def test_clean_epochs_pass_the_gate_across_seeds():

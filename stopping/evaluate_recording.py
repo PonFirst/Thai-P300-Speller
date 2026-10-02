@@ -66,7 +66,7 @@ import pandas as pd
 
 from pipeline.classifier_io import CheckpointMismatchError, check_stream_compatibility, score_epoch
 from pipeline.constants import EEG_CHANNELS, EEG_SFREQ
-from pipeline.epoching import extract_epochs
+from pipeline.epoching import extract_epochs, is_rank_deficient
 from pipeline.inference_service import load_service_components
 from pipeline.manifest import ManifestError, sha256_file
 from pipeline.quality import gate_epoch
@@ -223,6 +223,7 @@ class AssembledTrials:
     n_flashes_quality_rejected: int
     n_flashes_scored: int
     seconds_per_flash: float
+    n_flashes_rank_deficient: int = 0     # linearly dependent channels: no score exists
 
 
 def assemble_trials(rec: RecordingForReplay, *, epoch_spec, gate_policy: str, characters: list,
@@ -236,6 +237,7 @@ def assemble_trials(rec: RecordingForReplay, *, epoch_spec, gate_policy: str, ch
 
     scored = {}   # flash list-index -> score, for kept flashes that also pass the quality gate
     n_quality_rejected = 0
+    n_rank_deficient = 0
     epoch_i = 0
     for i, keep in enumerate(kept):
         if not keep:
@@ -245,6 +247,9 @@ def assemble_trials(rec: RecordingForReplay, *, epoch_spec, gate_policy: str, ch
         decision = gate_epoch(epoch, epoch_spec.channels, gate_policy)
         if not decision.accept:
             n_quality_rejected += 1
+            continue
+        if is_rank_deficient(epoch):        # as the service: a singular covariance has no score
+            n_rank_deficient += 1
             continue
         scored[i] = float(score_epoch(checkpoint, epoch))
 
@@ -286,6 +291,7 @@ def assemble_trials(rec: RecordingForReplay, *, epoch_spec, gate_policy: str, ch
         n_trials_excluded_no_target=no_target, n_trials_excluded_no_accepted_flashes=no_flashes,
         n_flashes_total=len(rec.flashes), n_flashes_epoch_rejected=n_epoch_rejected,
         n_flashes_quality_rejected=n_quality_rejected, n_flashes_scored=len(scored),
+        n_flashes_rank_deficient=n_rank_deficient,
         seconds_per_flash=seconds_per_flash)
 
 
@@ -329,7 +335,8 @@ def run_evaluation(manifest_path, recording_path, *, theta=None, t_min=None, t_m
     log(f"trials: {assembled.n_trials_used} used, {assembled.n_trials_excluded_no_target} excluded "
         f"(no target), {assembled.n_trials_excluded_no_accepted_flashes} excluded (no accepted flashes)")
     log(f"flashes: {assembled.n_flashes_total} total, {assembled.n_flashes_epoch_rejected} epoch-rejected, "
-        f"{assembled.n_flashes_quality_rejected} quality-gate-rejected, {assembled.n_flashes_scored} scored")
+        f"{assembled.n_flashes_quality_rejected} quality-gate-rejected, "
+        f"{assembled.n_flashes_rank_deficient} rank-deficient, {assembled.n_flashes_scored} scored")
     log(f"seconds/flash: {assembled.seconds_per_flash:.4f} (empirical, gate policy {policy!r})")
     if assembled.n_trials_used < 10:
         log(f"*** only {assembled.n_trials_used} usable trials; accuracy/ITR estimates will be noisy. ***")
