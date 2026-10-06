@@ -76,7 +76,7 @@ The service and the GUI are separate OS processes. The GUI launches the service 
 
 - `threshold_crossed`: the posterior max reached `theta` after at least `t_min` flashes.
 - `max_flashes_reached`: forced at `t_max`.
-- `trial_ended` *(extension)*: the stimulus ended the trial before either condition fired. With the defaults (5 repetitions × 24 flashes = 120 < `t_max` = 170), this is the only fallback that can actually occur. Without its own reason it would pass for one of the other two.
+- `trial_ended` *(extension)*: the stimulus ended the trial before either condition fired. With the defaults (5 repetitions × 24 flashes = 120 = `t_max`), it occurs when some flashes were rejected, so fewer than 120 were scored when the flashes ran out; otherwise the cap fires as `max_flashes_reached`. Without its own reason it would pass for one of the other two.
 
 If the controller reports a stop that meets neither condition, the service emits `service_status` `error` and commits nothing. It never relabels such a stop as a fallback.
 

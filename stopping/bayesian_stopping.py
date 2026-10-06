@@ -42,7 +42,7 @@ class BayesianStoppingController:
     """
 
     def __init__(self, n_chars=72, lam=0.7, theta=0.90, t_min=6,
-                 t_max=170, sigmoid_a=1.0, sigmoid_b=0.0, llr_clip=8.0):
+                 t_max=120, sigmoid_a=1.0, sigmoid_b=0.0, llr_clip=8.0):
         """
         Args:
             n_chars: size of the character matrix (72 for this project).

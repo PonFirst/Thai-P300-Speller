@@ -3,7 +3,7 @@
 #
 #   bci2000/run_session.sh calibrate --subject S01 --text "ภาษาไทย" [--reps 5]
 #   bci2000/run_session.sh online    --subject S01 --model models/S01_bci2000.prm --text "สวัสดี"
-#                                    [--condition transformer|uniform|fixed] [--reps 8]
+#                                    [--condition transformer|uniform|fixed] [--reps 5]
 #   bci2000/run_session.sh online    --subject S01 --model models/S01_bci2000.prm --free
 #   bci2000/run_session.sh check     --subject S01        # 60 s: blink / eyes closed / jaw, for H3 + H13
 #
@@ -101,8 +101,9 @@ Set parameter TextToSpell $ENCODED"
       uniform) COND_LINES="Set parameter LanguageModel 0" ;;
       fixed) COND_LINES="Set parameter StoppingRule 0" ;;
     esac
-    # Bayesian stopping may run up to t_max flashes: 8 repetitions (192) cover the default t_max of 170.
-    DEFAULT_REPS=8; [ "$CONDITION" = fixed ] && DEFAULT_REPS=5
+    # 5 repetitions (120 flashes) in every condition: dynamic stopping's t_max is 120 too, so it never
+    # gets more flashes than the fixed baseline.
+    DEFAULT_REPS=5
     SETTINGS="Load parameterfile $MODEL_LOAD
 $MODE_LINES
 $COND_LINES
@@ -207,8 +208,21 @@ while IFS= read -r f; do
 done < <(ls -t "$DIR"/*.dat 2> /dev/null || true)
 [ -n "$LATEST" ] || { echo "No recording was written by this run (system log: $WORK/system.log)."; exit 1; }
 echo "Recorded: $LATEST"
+# BCI2000's system log (module errors, the headset's packet-loss report) beside the recording it belongs to
+cp "$WORK/system.log" "${LATEST%.dat}.system.log" 2> /dev/null && echo "System log: ${LATEST%.dat}.system.log"
 case "$MODE" in
-  calibrate) echo "Next: $PY -m pipeline.fit_from_recording --recording \"$LATEST\" --id $SUBJECT \\
+  calibrate)
+    # Every calibration run of this session folder, oldest first: speller runs (they have flashes) without
+    # a classifier. Printed as "<count>" then "<shell-quoted paths>"; the paths may contain spaces.
+    RUNS="$("$PY" -c "import sys, shlex; sys.path.insert(0, '$REPO')
+from pathlib import Path
+from pipeline.bci2000_dat import read_dat
+runs = [f for f in sorted(Path(sys.argv[1]).glob('*.dat'))
+        if 'StimulusCode' in (d := read_dat(f)).states and 'FlashChar1' in d.states and 'RiemannModelID' not in d.params]
+print(len(runs)); print(' '.join(shlex.quote(str(f)) for f in runs))" "$DIR")"
+    N_RUNS="$(printf '%s\n' "$RUNS" | head -1)" RUNS="$(printf '%s\n' "$RUNS" | tail -1)"
+    echo "Calibration runs in this session: $N_RUNS (do another run, or fit on all of them)"
+    echo "Next: $PY -m pipeline.fit_from_recording --id $SUBJECT --recording $RUNS \\
       --lm-transformer-checkpoint models/thai_gpt_checkpoint.pt$([ "$FAKE" = 1 ] && echo " --allow-demo")" ;;
   online) echo "Summary: $PY -m stopping.summarize_experiment --recording \"$LATEST\"" ;;
   check) echo "Checks: $PY tools/h13_montage_check.py \"$LATEST\"" ;;

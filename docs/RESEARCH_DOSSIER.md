@@ -506,13 +506,14 @@ Caveats to state with this table:
 | `llr(s, π)` | (a·s + b) + ln((1−π)/π), clipped to ±8 |
 | `update(group, s, π)` | add llr to the group's log-probabilities, renormalize, t += 1, check stop |
 
-Defaults [VERIFIED: code]: λ = 0.7, θ = 0.90, t_min = 6, t_max = 170, clip = 8.0.
+Defaults [VERIFIED: code]: λ = 0.7, θ = 0.90, t_min = 6, t_max = 120, clip = 8.0.
 Verified against a hand-worked 4-character example in `tests/test_bayesian_stopping.py`
 (uniform prior, group {0,1}, LLR = ln 3 gives posterior [0.375, 0.375, 0.125, 0.125]).
 
-Note: with 5 repetitions (120 flashes) < t_max (170), the forced stop at t_max cannot fire
-with defaults; if θ is never reached, the trial ends and the service commits the argmax with
-the distinct reason `trial_ended`. Fallback commits are always labelled and shown differently
+Note: t_max = 120 = 5 repetitions × 24 flashes, so dynamic stopping never gets more flashes
+than the fixed baseline (changed from 170, which could never fire with 120 flashes). If θ is
+never reached, the cap commits the argmax (`max_flashes_reached`); if some flashes were rejected,
+the flashes run out first and the argmax is committed with the distinct reason `trial_ended`. Fallback commits are always labelled and shown differently
 in the panel, never mixed with confident ones.
 
 ### 4.12 The language models
@@ -663,7 +664,7 @@ Equations are numbered for slides and Q&A. Code references show where each one l
 | λ | LM blend weight (0.7) |
 | p_t(c) | posterior P(c* = c \| h, s_1..s_t, G_1..G_t); ℓ_t(c) = ln p_t(c) |
 | a, b | Platt slope and intercept |
-| θ, t_min, t_max | stopping threshold (0.90), minimum flashes (6), maximum flashes (170) |
+| θ, t_min, t_max | stopping threshold (0.90), minimum flashes (6), maximum flashes (120) |
 
 ### 5.2 The problem as sequential Bayesian inference
 
@@ -764,8 +765,8 @@ $$\text{stop if } \big(t \ge t_{min} \ \text{and}\ \max_c p_t(c) \ge \theta\big)
   If the posterior is well calibrated, threshold stops should be correct at least θ of the
   time. [Whether the posterior is calibrated on real data: OPEN, measurable from the logs]
 - t_min (6) stops a strong prior or one spurious flash from committing immediately.
-- t_max (170) bounds time. With 120 flashes available it never fires; the stimulus's
-  `trial_end` produces a separately labelled fallback commit instead.
+- t_max (120) bounds time at the fixed baseline's 5 repetitions. When rejected flashes leave
+  fewer than 120 scored, the stimulus's `trial_end` produces a separately labelled fallback commit.
 - A fixed posterior threshold over many hypotheses is a relative of Wald's sequential
   probability ratio test. A boundary-aware (adaptive) threshold was considered and descoped.
 
@@ -1210,8 +1211,9 @@ It caps any single flash at changing a group's odds by about 3,000×, which boun
 artifacts and outlier scores.
 
 **Q36. What happens if the threshold is never reached?**
-With default settings the stimulus runs 120 flashes, fewer than t_max = 170, so the trial ends
-and the service commits the most probable character with the reason `trial_ended`. Fallback
+With default settings the stimulus runs 120 flashes and t_max = 120, so the cap commits the most
+probable character (`max_flashes_reached`); if flashes were rejected, the trial ends first and the
+commit's reason is `trial_ended`. Fallback
 commits are logged and shown differently from confident ones.
 
 **Q37. Is this an optimal stopping rule?**
@@ -1390,7 +1392,7 @@ consider adaptive thresholds and information-based flash ordering (stubs exist, 
 | ECE bins | 10 | `stopping/calibrate.py` |
 | λ | 0.7 | `stopping/bayesian_stopping.py`, manifest |
 | θ | 0.90 | same |
-| t_min / t_max | 6 / 170 | same |
+| t_min / t_max | 6 / 120 | same |
 | LLR clip | ±8 | same |
 | π | \|group\| / 72 = 1/12 | inference service, replay |
 | n-gram | order 4, α 0.1, β 0.4 | `stopping/lm_prior.py` |
@@ -1488,7 +1490,7 @@ n_flashes_used, reason}; `flash_rejected` {trial_id, flash_idx, reason, channels
  "classifier":  {"path": "models/subject_001_classifier.joblib", "sha256": "<64 hex>"},
  "calibration": {"path": "models/subject_001_platt.json", "sha256": "<64 hex>"},
  "language_model": {"type": "transformer", "checkpoint": {"path": "models/thai_gpt_checkpoint.pt", "sha256": "<64 hex>"}},
- "stopping": {"lam": 0.7, "theta": 0.9, "t_min": 6, "t_max": 170, "llr_clip": 8.0},
+ "stopping": {"lam": 0.7, "theta": 0.9, "t_min": 6, "t_max": 120, "llr_clip": 8.0},
  "quality_gate": {"policy": "skip"}}
 ```
 

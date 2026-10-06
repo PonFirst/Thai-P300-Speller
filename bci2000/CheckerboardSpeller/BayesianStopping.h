@@ -38,7 +38,7 @@ class Controller
   public:
     int nChars = 72;
     double lam = 0.7, theta = 0.90, sigmoidA = 1.0, sigmoidB = 0.0, llrClip = 8.0;
-    int tMin = 6, tMax = 170;
+    int tMin = 6, tMax = 120;
 
     std::vector<double> logP;
     int t = 0;

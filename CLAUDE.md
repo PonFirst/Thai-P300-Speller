@@ -148,7 +148,7 @@ $PY tools/fake_unicorn_bt.py --port 9000        # no headset: then  $PY collecti
 $PY collection/mock_headset.py --flat PO7 --noisy C4 --railed Oz      # exercise quality colours
 $PY -m pipeline.fit_from_recording --recording collection/recordings/<file>.csv --id subject_001 \
     --lm-transformer-checkpoint models/thai_gpt_checkpoint.pt     # omit the flag for the uniform LM; --lm-corpus for ngram
-$PY -m pipeline.fit_from_recording --recording <BCI2000 calibration>.dat --id subject_001 \
+$PY -m pipeline.fit_from_recording --recording <calibration R01>.dat [<R02>.dat ...] --id subject_001 \
     --lm-transformer-checkpoint models/thai_gpt_checkpoint.pt   # also writes models/<id>_bci2000.prm + <id>_lm.lmbin
 bci2000/demo_speller.sh [--slow] [TEXT]         # BCI2000 speller with the fake headset (opens a window)
 bci2000/run_session.sh check --subject S01      # then calibrate / online; see bci2000/README.md

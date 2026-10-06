@@ -7,6 +7,9 @@ session, and write the session manifest that every process loads.
         [--lm-corpus corpus.txt | --lm-transformer-checkpoint checkpoint.pt] \\
         [--allow-demo] [--force] [--n-splits 5] [--characters PATH]
 
+Several BCI2000 .dat runs of one calibration may be given (--recording R01.dat R02.dat): each is
+epoched on its own, and each run's selections stay separate cross-validation groups.
+
 The recording is either a recorder CSV (the Python/LSL stack) or a BCI2000 .dat written by the
 CheckerboardSpeller (pipeline/bci2000_recording.py: onsets from StimulusCode, labels from
 StimulusType, selections as trials, lost Bluetooth samples rejected). A .dat fit also writes
@@ -48,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -325,29 +329,69 @@ def out_of_fold_scores(X: np.ndarray, y: np.ndarray, groups: np.ndarray, n_split
     return oof
 
 
+# A calibration may span several BCI2000 runs (rests between them). These must agree across the runs;
+# a different session only warns (same person, but the cap was put on again).
+SAME_ACROSS_RUNS = ("SubjectName", "SamplingRate", "ChannelNames", "TargetDefinitions", "SourceChGain",
+                    "SourceChOffset")
+GROUP_STRIDE = 1_000_000   # cross-validation groups: run index * stride + selection, unique across runs
+
+
+def recording_list(recording) -> list[Path]:
+    """One recording, or several BCI2000 .dat runs of one calibration."""
+    paths = [Path(r) for r in recording] if isinstance(recording, (list, tuple)) else [Path(recording)]
+    if not paths:
+        raise FitError("no recording given")
+    if len(paths) > 1:
+        if not all(is_bci2000(p) for p in paths):
+            raise FitError("several recordings are supported for BCI2000 .dat runs only; give one CSV")
+        if len({p.resolve() for p in paths}) != len(paths):
+            raise FitError("the same recording is given twice")
+    return paths
+
+
+def check_runs_match(paths: list[Path], dats: list) -> list[str]:
+    """Refuses runs that can't share one model; returns warnings for ones that merely differ in session."""
+    def value(dat, name):
+        return dat.params[name].value if name in dat.params else None
+    for name in SAME_ACROSS_RUNS:
+        first = value(dats[0], name)
+        for path, dat in zip(paths[1:], dats[1:]):
+            if value(dat, name) != first:
+                raise FitError(f"{path.name} and {paths[0].name} differ in {name}: one model can't be fit "
+                               "across them")
+    sessions = {str(value(d, "SubjectSession")) for d in dats}
+    return [f"the runs come from different sessions ({', '.join(sorted(sessions))}): the cap was put on "
+            "again in between"] if len(sessions) > 1 else []
+
+
 def fit_from_recording(recording, subject_id: str, *, models_dir="models", manifest_path=None,
                        lm_corpus=None, lm_transformer_checkpoint=None, allow_demo: bool = False,
                        force: bool = False, n_splits: int = 5, characters_path=DEFAULT_CHARACTERS_PATH,
                        log: Callable[[str], None] = print) -> FitResult:
-    recording = Path(recording)
-    dat = None
+    paths = recording_list(recording)
+    recording = paths[0]
+    dats, run_warnings = [], []
     if is_bci2000(recording):
-        if not recording.is_file():
-            raise FitError(f"recording not found: {recording}")
-        try:
-            dat = read_dat(recording)
-        except DatError as exc:
-            raise FitError(str(exc)) from exc
+        for path in paths:
+            if not path.is_file():
+                raise FitError(f"recording not found: {path}")
+            try:
+                dats.append(read_dat(path))
+            except DatError as exc:
+                raise FitError(str(exc)) from exc
+        run_warnings = check_runs_match(paths, dats)
+    synthetic = next((f"{p.name}: {why}" if len(paths) > 1 else why
+                      for p, why in ((p, dat_synthetic_reason(d)) for p, d in zip(paths, dats)) if why), None)
     demo, ckpt_path, cal_path, man_path = output_paths(recording, subject_id, models_dir, manifest_path, allow_demo,
-                                                       synthetic=dat_synthetic_reason(dat) if dat is not None else None)
+                                                       synthetic=synthetic)
     # Every fit owns <stem>_bci2000.prm: a .dat fit writes it; a CSV fit removes an old one (under --force),
     # which would otherwise sit beside the new checkpoint and load the previous model into BCI2000.
     prm_path = bci2000_prm_path(ckpt_path)
-    writes_prm = dat is not None
+    writes_prm = bool(dats)
     # The speller's own copy of the Transformer prior (bci2000_lm_export); the same ownership rule.
     lm_bin_path = prm_path.with_name(prm_path.name.replace("_bci2000.prm", "_lm.lmbin"))
     writes_lm_bin = writes_prm and lm_transformer_checkpoint is not None
-    warnings = []
+    warnings = list(run_warnings)
     console: list[str] = []  # everything logged below, kept for the fit report
     t_start = time.monotonic()
 
@@ -366,7 +410,7 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
     load_characters_file(characters_path)
     if lm_corpus is not None and lm_transformer_checkpoint is not None:
         raise FitError("--lm-corpus and --lm-transformer-checkpoint are mutually exclusive; pick one LM")
-    if dat is not None and lm_corpus is not None:
+    if dats and lm_corpus is not None:
         raise FitError("BCI2000's speller has the Transformer and the uniform prior; the n-gram (--lm-corpus) is "
                        "not ported to it. Use --lm-transformer-checkpoint, or neither for the uniform prior")
     if lm_corpus is not None and not Path(lm_corpus).is_file():
@@ -374,39 +418,53 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
     if lm_transformer_checkpoint is not None and not Path(lm_transformer_checkpoint).is_file():
         raise FitError(f"--lm-transformer-checkpoint not found: {lm_transformer_checkpoint}")
 
-    rec = load_bci2000_recording(recording, dat) if dat is not None else load_recording(recording)
-    emit(f"loaded {rec.path.name}: {rec.n_rows} rows, {len(rec.timestamps)} EEG samples, "
-         f"{rec.n_non_eeg_rows} non-EEG rows, {len(rec.flashes)} flash markers"
-         + (f", {rec.n_malformed_markers} malformed markers" if rec.n_malformed_markers else "")
-         + (f", {rec.n_duplicate_flashes} duplicate flashes ignored" if rec.n_duplicate_flashes else ""))
-    if len(rec.timestamps) == 0 or not rec.flashes:
-        raise FitError(f"recording {rec.path}: no EEG samples or no flash markers")
-    finite_rows = np.all(np.isfinite(rec.data), axis=1)
-    if not finite_rows.any():
-        raise FitError(f"recording {rec.path}: no valid EEG samples")
-    median_abs = float(np.median(np.abs(rec.data[finite_rows])))
-    if median_abs < MIN_PLAUSIBLE_MEDIAN_ABS_UV:
-        raise FitError(f"recording {rec.path}: median |sample| is {median_abs:.3g}; that is volts, not "
-                       "microvolts (CLAUDE.md gotcha 1)")
-
+    recs = ([load_bci2000_recording(p, d) for p, d in zip(paths, dats)] if dats else [load_recording(recording)])
     spec = EpochSpec()
-    X, kept, reasons = extract_epochs(rec.timestamps, rec.data, [f.onset for f in rec.flashes], spec)
-    # Linearly dependent channels make the covariance singular: no score exists, so neither fit nor serve.
-    usable = np.array([not is_rank_deficient(e) for e in X], dtype=bool)
-    if not usable.all():
-        idx = np.flatnonzero(kept)
-        for j in np.flatnonzero(~usable):
-            kept[idx[j]] = False
-            reasons[idx[j]] = RANK_DEFICIENT
-        X = X[usable]
-    # In a .dat the only non-finite samples are the ones the source filled in for lost packets.
-    rename = {"non_finite": "lost_samples"} if rec.kind == "bci2000" else {}
-    rejected = dict(Counter(rename.get(r, r) for r in reasons if r is not None))
-    flashes = [f for f, k in zip(rec.flashes, kept) if k]
+    Xs, flashes, group_ids, reasons_all = [], [], [], []
+    for run, rec in enumerate(recs):
+        emit(f"loaded {rec.path.name}: {rec.n_rows} rows, {len(rec.timestamps)} EEG samples, "
+             f"{rec.n_non_eeg_rows} non-EEG rows, {len(rec.flashes)} flash markers"
+             + (f", {rec.n_malformed_markers} malformed markers" if rec.n_malformed_markers else "")
+             + (f", {rec.n_duplicate_flashes} duplicate flashes ignored" if rec.n_duplicate_flashes else ""))
+        if len(rec.timestamps) == 0 or not rec.flashes:
+            raise FitError(f"recording {rec.path}: no EEG samples or no flash markers")
+        finite_rows = np.all(np.isfinite(rec.data), axis=1)
+        if not finite_rows.any():
+            raise FitError(f"recording {rec.path}: no valid EEG samples")
+        median_abs = float(np.median(np.abs(rec.data[finite_rows])))
+        if median_abs < MIN_PLAUSIBLE_MEDIAN_ABS_UV:
+            raise FitError(f"recording {rec.path}: median |sample| is {median_abs:.3g}; that is volts, not "
+                           "microvolts (CLAUDE.md gotcha 1)")
+
+        # Each run is epoched on its own: no window reaches across the end of one file into the next.
+        X, kept, reasons = extract_epochs(rec.timestamps, rec.data, [f.onset for f in rec.flashes], spec)
+        # Linearly dependent channels make the covariance singular: no score exists, so neither fit nor serve.
+        usable = np.array([not is_rank_deficient(e) for e in X], dtype=bool)
+        if not usable.all():
+            idx = np.flatnonzero(kept)
+            for j in np.flatnonzero(~usable):
+                kept[idx[j]] = False
+                reasons[idx[j]] = RANK_DEFICIENT
+            X = X[usable]
+        # In a .dat the only non-finite samples are the ones the source filled in for lost packets.
+        rename = {"non_finite": "lost_samples"} if rec.kind == "bci2000" else {}
+        reasons_all += [rename.get(r, r) for r in reasons]
+        run_flashes = [f for f, k in zip(rec.flashes, kept) if k]
+        Xs.append(X)
+        flashes += run_flashes
+        group_ids += [run * GROUP_STRIDE + f.trial_id for f in run_flashes]
+    X = np.concatenate(Xs) if len(Xs) > 1 else Xs[0]
+    n_flashes = sum(len(r.flashes) for r in recs)
+    rejected = dict(Counter(r for r in reasons_all if r is not None))
     y = np.array([int(f.is_target) for f in flashes], dtype=int)
-    groups = np.array([f.trial_id for f in flashes], dtype=int)
+    groups = np.array(group_ids, dtype=int)
     n_trials, n_targets = len(np.unique(groups)), int(y.sum())
-    emit(f"epochs: {len(flashes)} used of {len(rec.flashes)} flashes; rejected {rejected or 'none'}")
+    emit(f"epochs: {len(flashes)} used of {n_flashes} flashes"
+         + (f" from {len(recs)} runs" if len(recs) > 1 else "") + f"; rejected {rejected or 'none'}")
+    # Provenance: one recording's sha256, or for several runs the sha256 of their sha256s in order.
+    source_sha = (recs[0].sha256 if len(recs) == 1
+                  else hashlib.sha256("\n".join(r.sha256 for r in recs).encode()).hexdigest())
+    source_name = ", ".join(r.path.name for r in recs)
     if n_trials < MIN_TRIALS or n_targets < MIN_TARGET_EPOCHS or len(y) - n_targets < MIN_NONTARGET_EPOCHS:
         raise FitError(
             f"too little usable data: {n_trials} trials, {n_targets} target and {len(y) - n_targets} "
@@ -425,13 +483,13 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
 
     final = build_pipeline()
     final.fit(X, y)
-    save_checkpoint(ckpt_path, final, spec, {"recording_sha256": rec.sha256, "n_epochs": int(len(y)),
+    save_checkpoint(ckpt_path, final, spec, {"recording_sha256": source_sha, "n_epochs": int(len(y)),
                                              "n_targets": n_targets, "n_trials": int(n_trials)})
     _write_json_atomic({
         "format": CALIBRATION_FORMAT, "a": float(a), "b": float(b), "score_method": SCORE_METHOD,
         "classifier_sha256": sha256_file(ckpt_path), "ece": float(ece), "n_scores": int(len(oof)),
         "n_targets": n_targets, "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "source_recording_sha256": rec.sha256,
+        "source_recording_sha256": source_sha,
     }, cal_path)
     if writes_prm:
         # Before the manifest: a failed export must not leave a new manifest beside an old model file.
@@ -442,7 +500,7 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
             elif lm_bin_path.exists():
                 lm_bin_path.unlink()      # --force refit with the uniform prior: the old LM is not this model's
             bci2000_export.export_prm(ckpt_path, cal_path, prm_path, {
-                "recording": rec.path.name, "recording_sha256": rec.sha256, "subject_id": subject_id,
+                "recording": source_name, "recording_sha256": source_sha, "subject_id": subject_id,
                 "demo": demo, "n_epochs": int(len(y)), "n_targets": n_targets, "out_of_fold_auc": round(auc, 4)},
                 extra_lines=bci2000_export.stopping_lines(DEFAULT_STOPPING, lm_bin_path if writes_lm_bin else None))
         except (bci2000_export.ExportError, bci2000_lm_export.LMExportError) as exc:
@@ -464,6 +522,15 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
         base_dir=man_abs.parent, characters_path=Path(characters_path), classifier_path=ckpt_path,
         calibration_path=cal_path, language_model=lm), man_abs)
 
+    recording_report = [{
+        "path": r.path.as_posix(), "sha256": r.sha256, "n_rows": r.n_rows,
+        "n_eeg_samples": int(len(r.timestamps)), "n_non_eeg_rows": r.n_non_eeg_rows,
+        "n_flash_markers": len(r.flashes), "n_malformed_markers": r.n_malformed_markers,
+        "n_duplicate_flashes": r.n_duplicate_flashes,
+        "integrity": xlog.read_json_if_exists(xlog.integrity_path(r.path)),
+        "kind": r.kind,
+        "bci2000": r.bci2000,
+    } for r in recs]
     # The artifacts are written by now, so a fit report that can't be written is a warning, not a failure.
     try:
         xlog.write_json_atomic({
@@ -472,15 +539,9 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
             "duration_s": round(time.monotonic() - t_start, 2),
             "subject_id": subject_id,
             "demo": demo,
-            "recording": {
-                "path": rec.path.as_posix(), "sha256": rec.sha256, "n_rows": rec.n_rows,
-                "n_eeg_samples": int(len(rec.timestamps)), "n_non_eeg_rows": rec.n_non_eeg_rows,
-                "n_flash_markers": len(rec.flashes), "n_malformed_markers": rec.n_malformed_markers,
-                "n_duplicate_flashes": rec.n_duplicate_flashes,
-                "integrity": xlog.read_json_if_exists(xlog.integrity_path(recording)),
-                "kind": rec.kind,
-                "bci2000": rec.bci2000,
-            },
+            # The first (or only) recording; "recordings" lists every run of a multi-run calibration.
+            "recording": recording_report[0],
+            "recordings": recording_report,
             # <recording>.session.json: the calibration sentence and settings; None for a recording
             # made before session records existed, or moved away from its sidecars.
             "calibration_session": xlog.read_json_if_exists(xlog.session_record_path(recording)),
@@ -508,7 +569,7 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
         warnings.append(f"fit report not written: {exc}")
         report_path = None
 
-    return FitResult(demo=demo, n_flashes=len(rec.flashes), n_epochs=int(len(y)), n_targets=n_targets,
+    return FitResult(demo=demo, n_flashes=n_flashes, n_epochs=int(len(y)), n_targets=n_targets,
                      n_trials=int(n_trials), rejected=rejected, n_splits=k, auc=auc, a=float(a), b=float(b),
                      ece=float(ece), checkpoint_path=ckpt_path, calibration_path=cal_path,
                      manifest_path=manifest.path, fingerprint=manifest.fingerprint, warnings=warnings,
@@ -538,7 +599,9 @@ def format_summary(result: FitResult) -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Fit classifier + Platt calibration from a recording "
                                                  "and write the session manifest.")
-    parser.add_argument("--recording", required=True, help="recorder CSV, or a BCI2000 .dat from CheckerboardSpeller")
+    parser.add_argument("--recording", required=True, nargs="+",
+                        help="recorder CSV, or one or more BCI2000 .dat runs from CheckerboardSpeller (one "
+                             "calibration split into runs: same subject, montage and matrix)")
     parser.add_argument("--id", required=True, dest="subject_id", help="subject id used in artifact names")
     parser.add_argument("--models-dir", default="models",
                         help="checkpoint and calibration directory; a relative path resolves against the repo root")

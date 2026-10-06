@@ -15,9 +15,10 @@ Additive extensions (flagged in docs/INTERFACES.md):
 
     reason "trial_ended"  The stimulus finished the trial before either stopping
                           condition fired. The stimulus runs a fixed number of
-                          repetitions, e.g. 5 x 24 = 120 flashes < t_max = 170,
-                          so this happens; without its own reason it would
-                          masquerade as one of the other two.
+                          repetitions (5 x 24 = 120 flashes = t_max by default);
+                          when flashes were rejected, the flashes run out before t
+                          reaches t_max, so this happens; without its own reason
+                          it would masquerade as one of the other two.
     flash_rejected       trial_id, flash_idx, reason, channels
     service_status       state, detail, manifest_fingerprint
 

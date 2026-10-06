@@ -114,7 +114,7 @@ CheckerboardSpellerTask::CheckerboardSpellerTask()
             "// prior blend: p0 = lambda * LM prior + (1 - lambda) / characters",
         "Application:Bayesian%20Stopping float StoppingTheta= 0.9 0.9 0 1 // stop once the posterior max reaches this",
         "Application:Bayesian%20Stopping int StoppingTMin= 6 6 0 % // flashes before stopping is allowed",
-        "Application:Bayesian%20Stopping int StoppingTMax= 170 170 1 % // forced stop after this many flashes",
+        "Application:Bayesian%20Stopping int StoppingTMax= 120 120 1 % // forced stop after this many flashes",
         "Application:Bayesian%20Stopping float StoppingLLRClip= 8 8 0 % // clip on each flash's log-likelihood ratio",
         "Application:Language%20Model int LanguageModel= 0 0 0 1 "
             "// 0: uniform prior, 1: Thai Transformer (LanguageModelFile); the fitted model's .prm sets it (enumeration)",

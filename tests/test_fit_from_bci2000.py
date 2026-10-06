@@ -438,3 +438,61 @@ def test_epochs_with_linearly_dependent_channels_are_not_trained_on(tmp_path):
     with pytest.raises(ffr.FitError, match="rank_deficient"):
         ffr.fit_from_recording(path, "s1", models_dir=tmp_path / "models", manifest_path=tmp_path / "m.json",
                                n_splits=2, log=lambda s: None)
+
+
+# ---------------------------------------------------------------------------
+# a calibration split into several runs
+# ---------------------------------------------------------------------------
+
+def _short_run(path, seed, **kw):
+    session = w.build_session(w.checkerboard_selections(2, 2, seed=seed))
+    return w.write_speller_dat(path, session, w.planted_signal(session, seed=seed), seed=seed, **kw)
+
+
+def test_runs_too_short_alone_fit_together_with_selections_kept_apart(tmp_path):
+    a, b = _short_run(tmp_path / "R01.dat", 5), _short_run(tmp_path / "R02.dat", 6)
+    result = ffr.fit_from_recording([a, b], "s1", models_dir=tmp_path / "models", manifest_path=tmp_path / "m.json",
+                                    n_splits=4, log=lambda s: None)
+    # selection 0 of R01 and selection 0 of R02 are different characters: 4 cross-validation groups, not 2
+    assert result.n_trials == 4 and result.n_flashes == 2 * 2 * 2 * 24 and not result.warnings
+    report = json.loads(result.report_path.read_text())
+    assert [Path(r["path"]).name for r in report["recordings"]] == ["R01.dat", "R02.dat"]
+    assert report["recording"] == report["recordings"][0]
+    shas = [ffr.sha256_file(p) for p in (a, b)]
+    import hashlib
+    combined = hashlib.sha256("\n".join(shas).encode()).hexdigest()
+    assert json.loads(result.calibration_path.read_text())["source_recording_sha256"] == combined
+    prov = json.loads(parse_prm(result.bci2000_prm_path)["RiemannProvenance"].value)
+    assert prov["recording"] == "R01.dat, R02.dat" and prov["recording_sha256"] == combined
+
+
+def test_runs_from_another_subject_or_matrix_are_refused(tmp_path):
+    a = _short_run(tmp_path / "R01.dat", 5)
+    other = _short_run(tmp_path / "X01.dat", 6, omit_params=("SubjectName",),
+                       extra_params=(w.scalar("SubjectName", "someone", section="Storage:Documentation"),))
+    with pytest.raises(ffr.FitError, match="differ in SubjectName"):
+        ffr.fit_from_recording([a, other], "s1", models_dir=tmp_path / "models", manifest_path=tmp_path / "m.json",
+                               log=lambda s: None)
+    with pytest.raises(ffr.FitError, match="given twice"):
+        ffr.fit_from_recording([a, tmp_path / "." / "R01.dat"], "s1", models_dir=tmp_path / "models",
+                               manifest_path=tmp_path / "m.json", log=lambda s: None)
+    with pytest.raises(ffr.FitError, match=".dat runs only"):
+        ffr.fit_from_recording([a, tmp_path / "x.csv"], "s1", models_dir=tmp_path / "models",
+                               manifest_path=tmp_path / "m.json", log=lambda s: None)
+    assert not (tmp_path / "models").exists()
+
+
+def test_runs_from_another_session_fit_with_a_warning(tmp_path):
+    a = _short_run(tmp_path / "R01.dat", 5)
+    b = _short_run(tmp_path / "R02.dat", 6, omit_params=("SubjectSession",),
+                   extra_params=(w.scalar("SubjectSession", "002", section="Storage:Documentation"),))
+    result = ffr.fit_from_recording([a, b], "s1", models_dir=tmp_path / "models", manifest_path=tmp_path / "m.json",
+                                    n_splits=4, log=lambda s: None)
+    assert any("different sessions" in x for x in result.warnings)
+
+
+def test_the_cli_takes_several_runs(tmp_path, capsys):
+    a, b = _short_run(tmp_path / "R01.dat", 5), _short_run(tmp_path / "R02.dat", 6)
+    assert ffr.main(["--recording", str(a), str(b), "--id", "s1", "--models-dir", str(tmp_path / "models"),
+                     "--manifest", str(tmp_path / "m.json"), "--n-splits", "4"]) == 0
+    assert "from 2 runs" in capsys.readouterr().out

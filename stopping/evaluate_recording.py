@@ -7,7 +7,7 @@ stopping/validate_offline.py's fabricated-grid sanity check.
 
     python -m stopping.evaluate_recording --manifest session_manifest.json \\
         --recording collection/recordings/<held-out-session>.csv \\
-        [--theta 0.7 0.8 0.9 0.95] [--t-min 1 3 6] [--t-max 170] [--lam 0.7] \\
+        [--theta 0.7 0.8 0.9 0.95] [--t-min 1 3 6] [--t-max 120] [--lam 0.7] \\
         [--out results/replay/<name>.csv] [--allow-demo]
 
 The recording may also be a BCI2000 .dat from CheckerboardSpeller (load_bci2000_for_replay):

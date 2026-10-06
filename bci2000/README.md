@@ -72,6 +72,7 @@ bci2000/run_session.sh online    --subject S01 --model models/S01_bci2000.prm --
 - **Conditions:** `transformer` (the default) is Bayesian stopping with the model's Transformer prior; `uniform` is the same stopping without the LM (the no-LM control); `fixed` is no stopping, every flash, best mean score. The parameters each run used are stored in its `.dat`.
 - **Before anything starts**, the script refuses a text with characters outside the matrix, a missing model, a model without the Transformer prior under `transformer`, a stale `ThaiCheckerboard.prm`, a running BCI2000, or no `/dev/cu.UN-*` port.
 - **The Operator opens configured:** check the signal in the Source window, then press Start. The script ends with the run, prints BCI2000's errors if any, and prints the next command (fit, summary or montage check).
+- **Calibration in several runs:** run `calibrate` again for each part, with a rest in between. After each run the script counts the session's calibration runs and prints a fit command that lists all of them. The fit cuts epochs within each file, keeps each run's characters apart in cross-validation, and refuses runs that differ in subject, montage, gains or matrix.
 - **Rehearse without the headset:** `--fake` uses `tools/fake_unicorn_bt.py`, whose data marks itself synthetic; `--auto` starts the run without waiting for Start.
 
 **Afterwards:**

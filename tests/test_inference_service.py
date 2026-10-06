@@ -655,7 +655,7 @@ def test_components_built_from_manifest(session):
     comps = svc.load_service_components(session.path)
     controller = comps.controller_factory()
     assert isinstance(controller, BayesianStoppingController)
-    assert (controller.n_chars, controller.theta, controller.t_min, controller.t_max) == (72, 0.85, 3, 170)
+    assert (controller.n_chars, controller.theta, controller.t_min, controller.t_max) == (72, 0.85, 3, 120)
     assert (controller.sigmoid_a, controller.sigmoid_b, controller.lam, controller.llr_clip) == (1.5, -0.5, 0.7, 8.0)
     assert comps.gate_policy == "warn" and comps.epoch_spec == SPEC
     assert np.all(comps.language_model.get_prior("") == 1 / 72)

@@ -10,7 +10,7 @@ Schema version 1:
       "classifier":  {"path": "models/subject_001_classifier.joblib", "sha256": "<64 hex>"},
       "calibration": {"path": "models/subject_001_platt.json", "sha256": "<64 hex>"},
       "language_model": {"type": "uniform"},
-      "stopping": {"lam": 0.7, "theta": 0.9, "t_min": 6, "t_max": 170, "llr_clip": 8.0},
+      "stopping": {"lam": 0.7, "theta": 0.9, "t_min": 6, "t_max": 120, "llr_clip": 8.0},
       "quality_gate": {"policy": "skip"}
     }
 
@@ -60,7 +60,8 @@ LM_TYPES = ("uniform", "ngram", "transformer")
 CALIBRATION_FORMAT = "p300-platt-v1"
 SCORE_METHOD = "decision_function"
 
-DEFAULT_STOPPING = {"lam": 0.7, "theta": 0.90, "t_min": 6, "t_max": 170, "llr_clip": 8.0}
+# t_max = 120 = 5 repetitions x 24 flashes: dynamic stopping gets at most the fixed baseline's flashes
+DEFAULT_STOPPING = {"lam": 0.7, "theta": 0.90, "t_min": 6, "t_max": 120, "llr_clip": 8.0}
 DEFAULT_QUALITY_GATE = {"policy": GATE_SKIP}
 DEFAULT_NGRAM = {"order": 4, "alpha": 0.1, "backoff_weight": 0.4}
 

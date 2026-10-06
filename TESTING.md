@@ -123,7 +123,7 @@ Thresholds are unchanged: green 1–200 µV peak-to-peak, yellow 200–400 µV, 
 
 **Intended behaviour**
 - **Forced stop:** the commit reason is `max_flashes_reached`, distinct from `threshold_crossed`.
-- **Trial ended first:** if the stimulus ends the trial before either condition fires, the reason is `trial_ended`. With 5 repetitions (120 flashes) and `t_max` = 170, this is the fallback that actually occurs.
+- **Trial ended first:** if the stimulus ends the trial before either condition fires, the reason is `trial_ended`. With 5 repetitions (120 flashes) and `t_max` = 120, it occurs when some flashes were rejected: the flashes run out before 120 were scored.
 - **Neither condition:** a stop that meets neither condition is an error and commits nothing; it is never relabelled.
 - **In the GUI:** fallback commits are orange, underlined, and marked ▲ in the composed text, with "▲ FALLBACK" log rows and a tooltip giving the reason and flash count. They are never distinguished by colour alone.
 

@@ -302,7 +302,7 @@ def stopping_lines(stopping: dict, lm_file: Path | None) -> list[str]:
         f"{sec} float StoppingLambda= {_num(stopping['lam'])} 0.7 0 1 // prior blend weight",
         f"{sec} float StoppingTheta= {_num(stopping['theta'])} 0.9 0 1 // stopping threshold",
         f"{sec} int StoppingTMin= {int(stopping['t_min'])} 6 0 % // flashes before stopping is allowed",
-        f"{sec} int StoppingTMax= {int(stopping['t_max'])} 170 1 % // forced stop",
+        f"{sec} int StoppingTMax= {int(stopping['t_max'])} 120 1 % // forced stop",
         f"{sec} float StoppingLLRClip= {_num(stopping['llr_clip'])} 8 0 % // per-flash LLR clip",
         f"{lmsec} int LanguageModel= {1 if lm_file is not None else 0} 1 0 1 "
         "// 0 uniform, 1 Thai Transformer (enumeration)",
