@@ -7,7 +7,9 @@
 
 #include <cmath>
 #include <sstream>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 RegisterFilter(UnicornSerialADC, 1); // ADC filters must be registered at location "1".
 
@@ -49,7 +51,7 @@ void UnicornSerialADC::OnPublish()
         "Source:Signal%20Properties int TestMode= 0 0 0 1 "
             " // must be 0: the Bluetooth protocol has no test signal (boolean)",
         "Source:Unicorn string SerialPort= auto auto % % "
-            " // headset serial port; auto: the single /dev/cu.UN-* device",
+            " // headset serial port; auto: the single /dev/cu.UN-* device (macOS). Windows: the COM port, e.g. COM5",
         "Source:Unicorn string TcpAddress= % % % % "
             " // host:port to read the same bytes over TCP instead (fake headset); empty: use SerialPort",
         "Source:Unicorn int MaxGapFill= 250 250 0 % "
@@ -102,6 +104,10 @@ std::string UnicornSerialADC::ResolvePort() const
     std::string port = Parameter("SerialPort");
     if (port != "auto" && !port.empty())
         return port;
+#ifdef _WIN32
+    return "!Set SerialPort to the headset's COM port, e.g. COM5: Windows Settings > Bluetooth & devices > "
+           "More Bluetooth settings > COM Ports, the \"Outgoing\" port of UN-...";
+#endif
     std::vector<std::string> ports = Unicorn::FindHeadsetPorts();
     if (ports.size() == 1)
         return ports[0];
@@ -172,8 +178,13 @@ void UnicornSerialADC::OnPreflight(SignalProperties &Output) const
         std::string port = ResolvePort();
         if (!port.empty() && port[0] == '!')
             bcierr << port.substr(1);
+#ifdef _WIN32
+        else if (port.find("COM") == std::string::npos)
+            bcierr << "SerialPort must be a COM port such as COM5, not \"" << port << "\"";
+#else
         else if (::access(port.c_str(), R_OK | W_OK) != 0)
             bcierr << "Cannot access headset port " << port;
+#endif
     }
 
     Output = SignalProperties(n + NumStateChannels, Parameter("SampleBlockSize"), SignalType::float32);

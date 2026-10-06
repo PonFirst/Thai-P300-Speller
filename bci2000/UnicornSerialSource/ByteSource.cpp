@@ -1,6 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
-// ByteSource: see ByteSource.h.
+// ByteSource on macOS (POSIX): see ByteSource.h. Windows: ByteSourceWin32.cpp.
 ////////////////////////////////////////////////////////////////////////////////
+#ifndef _WIN32
 #include "ByteSource.h"
 
 #include <cerrno>
@@ -168,3 +169,4 @@ std::vector<std::string> FindHeadsetPorts()
 }
 
 } // namespace Unicorn
+#endif // _WIN32

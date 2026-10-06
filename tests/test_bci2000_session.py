@@ -272,3 +272,32 @@ def test_the_launcher_refuses_bad_requests(args, message, tmp_path):
     assert out.returncode == 2, out.stdout + out.stderr
     import re
     assert re.search(message, out.stdout + out.stderr), out.stdout + out.stderr
+
+
+# ---------------------------------------------------------------------------
+# bci2000/session_helper.py (used by the Windows launcher, run_session.ps1)
+# ---------------------------------------------------------------------------
+
+HELPER = REPO_ROOT / "bci2000" / "session_helper.py"
+
+
+def helper(*args):
+    return subprocess.run([sys.executable, str(HELPER), *map(str, args)], capture_output=True, text=True,
+                          encoding="utf-8", timeout=60)
+
+
+def test_the_helper_encodes_matrix_text_and_refuses_the_rest():
+    out = helper("encode", "ก่อน")
+    assert out.returncode == 0 and out.stdout.strip().isascii() and "%" in out.stdout
+    out = helper("encode", "กAB")
+    assert out.returncode == 2 and "not in the matrix: A B" in out.stderr
+
+
+def test_the_helper_lists_calibration_runs_only(tmp_path):
+    import bci2000_dat_writer as w
+    session = w.build_session(w.checkerboard_selections(2, 1, seed=2))
+    cal = w.write_speller_dat(tmp_path / "S1S001R02.dat", session, w.planted_signal(session, seed=2))
+    online = w.write_speller_dat(tmp_path / "S1S001R03.dat", session, w.planted_signal(session, seed=2),
+                                 extra_params=(w.scalar("RiemannModelID", "ab" * 32, section="Filtering"),))
+    lines = helper("calibration-runs", tmp_path).stdout.splitlines()
+    assert lines == ["1", str(cal)] and str(online) not in lines

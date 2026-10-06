@@ -1,5 +1,7 @@
 # This project's BCI2000 modules (macOS)
 
+On Windows: see [WINDOWS.md](WINDOWS.md) (this `windows` branch; not yet run on Windows).
+
 | Module | What it is |
 |---|---|
 | `UnicornSerialSource` | Source module for the Unicorn Hybrid Black over its Bluetooth serial port. It stands in for BCI2000's `gUnicornADC`, which needs g.tec's Windows-only `Unicorn.dll`. It has the same parameters and the same nine per-sample states, plus gap filling. See `UnicornSerialSource/UnicornSerialADC.h`. |

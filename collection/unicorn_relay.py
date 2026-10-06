@@ -485,6 +485,9 @@ def resolve_source(args) -> "SerialSource | TcpSource":
     found = find_headset_ports()
     if len(found) == 1:
         return SerialSource(found[0])
+    if not found and sys.platform == "win32":
+        raise ArgError("pass --port with the headset's COM port, e.g. --port COM5: Windows Settings > Bluetooth "
+                       "& devices > More Bluetooth settings > COM Ports, the \"Outgoing\" port of UN-...")
     if not found:
         raise ArgError(f"no {PORT_GLOB} device found: pair the headset in System Settings > Bluetooth "
                        "first (hold its button until the LED blinks), or pass --port / --tcp")
