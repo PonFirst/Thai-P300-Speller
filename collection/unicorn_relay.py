@@ -80,7 +80,7 @@ DELAY_BIN_S = 0.00025
 DELAY_BINS = 4000                      # 0 .. 1 s in 0.25 ms bins; the last bin catches anything later
 DELAY_SETTLE_S = 1.0                   # creating the outlets stalls the read loop ~60 ms once; not the link's fault
 HEALTH_EVERY_S = 10.0
-NO_DATA_AFTER_START_S = 5.0
+NO_DATA_AFTER_START_S = 10.0     # measured: the first bytes arrive 3.5-4 s after the port opens
 
 
 class LinkLost(Exception):

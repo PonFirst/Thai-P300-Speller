@@ -174,6 +174,8 @@ Wait for Running
 Wait for Suspended"
 fi
 
+# The Source window's display filters (never the recording): a 50 Hz notch for Thailand's mains, and a
+# 1 Hz high-pass so the headset's DC offset (~0.2-0.4 V) doesn't push the traces off screen.
 cat > "$WORK/session.bat" << EOF
 Change directory \$BCI2000LAUNCHDIR
 Reset system
@@ -182,6 +184,8 @@ Start executable UnicornSerialSource --local $SOURCE_ARGS
 Start executable $SP --local
 Start executable $APP --local
 Wait for Connected 30
+Set VisProperty SRCD.NotchFilter 50Hz
+Set VisProperty SRCD.HPFilter 1Hz
 Load parameterfile "$SPELLER_PRM"
 $SETTINGS
 Set parameter DataDirectory "$DATA"
@@ -194,7 +198,9 @@ EOF
 
 echo "run_session: $MODE, subject $SUBJECT, session $SESSION$([ "$MODE" = online ] && echo ", condition $CONDITION")"
 cd "$PROG"
-env -u QT_QPA_PLATFORM ./BCI2000Shell "$WORK/session.bat" || echo "BCI2000 stopped with an error: see below."
+# Not the exit status: BCI2000Shell exits nonzero after any Echo even when every command worked (measured).
+# Real failures are the errors in the system log (printed below) and a missing recording.
+env -u QT_QPA_PLATFORM ./BCI2000Shell "$WORK/session.bat" || true
 cd "$REPO"
 
 echo

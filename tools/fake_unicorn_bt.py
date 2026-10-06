@@ -47,7 +47,7 @@ class FakeUnicorn:
 
     def __init__(self, host="127.0.0.1", port=0, *, signal=None, rate_hz=up.UNICORN_SFREQ, n_samples=None,
                  drop=(), garbage=None, burst=1, synthetic=True, counter_start=0, send_ack=True,
-                 close_after=None, silent_after=None, reconnect=False):
+                 close_after=None, silent_after=None, reconnect=False, start_delay_s=0.0):
         self.signal = signal or noise_signal()
         self.rate_hz, self.n_samples = rate_hz, n_samples
         self.drop = drop if callable(drop) else set(drop).__contains__
@@ -57,6 +57,9 @@ class FakeUnicorn:
         # reconnect: serve connection after connection (BCI2000's UnicornSerialSource reconnects on every
         # Set config, as it would reopen the real headset's port); otherwise one connection only.
         self.reconnect = reconnect
+        # start_delay_s: silence after the start command before the first byte, as the real headset's
+        # Bluetooth link setup (measured: 3.5-4 s after the port opens on macOS)
+        self.start_delay_s = start_delay_s
         self.commands: list[bytes] = []
         self.sent = 0
         self._server = socket.socket()
@@ -94,6 +97,8 @@ class FakeUnicorn:
         conn.settimeout(0.005)
         try:
             self._wait_for(conn, up.START_ACQUISITION)
+            if self.start_delay_s:
+                time.sleep(self.start_delay_s)
             if self.send_ack:
                 conn.sendall(up.ACK)
             self._stream(conn)
@@ -177,9 +182,12 @@ def main(argv=None) -> int:
     p.add_argument("--port", type=int, default=9000)
     p.add_argument("--burst", type=int, default=4, help="deliver packets in groups of this many (radio-like)")
     p.add_argument("--drop-every", type=int, default=0, help="drop one packet in every N (0: none)")
+    p.add_argument("--start-delay", type=float, default=4.0,
+                   help="seconds of silence after the start command, like the real headset's link setup "
+                        "(measured 3.5-4 s; 0: answer at once)")
     args = p.parse_args(argv)
     every = args.drop_every
-    server = FakeUnicorn(args.host, args.port, burst=args.burst, reconnect=True,
+    server = FakeUnicorn(args.host, args.port, burst=args.burst, reconnect=True, start_delay_s=args.start_delay,
                          drop=(lambda k: k % every == every - 1) if every > 0 else ()).start()
     print("=" * 72)
     print(f"FAKE UNICORN on {server.host}:{server.port} -- SYNTHETIC DATA, not a brain.")

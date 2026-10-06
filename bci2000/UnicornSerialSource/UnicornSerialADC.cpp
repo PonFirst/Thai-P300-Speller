@@ -56,6 +56,8 @@ void UnicornSerialADC::OnPublish()
             " // longest run of lost samples to fill; a longer gap ends the run",
         "Source:Unicorn float DataTimeout= 3 3 0.1 % "
             " // seconds without data before the link counts as lost",
+        "Source:Unicorn float StartupTimeout= 10 10 1 % "
+            " // seconds to wait for the first data after opening the port (measured: 3.5-4 s on macOS)",
     END_PARAMETER_DEFINITIONS
 
     BEGIN_STREAM_DEFINITIONS
@@ -161,6 +163,8 @@ void UnicornSerialADC::OnPreflight(SignalProperties &Output) const
         bcierr << "A channel offset must be defined for each channel";
     if (Parameter("MaxGapFill") < 0)
         bcierr << "MaxGapFill must not be negative";
+    if (Parameter("DataTimeout") <= 0 || Parameter("StartupTimeout") < Parameter("DataTimeout"))
+        bcierr << "DataTimeout must be positive and StartupTimeout at least DataTimeout";
 
     std::string tcp = Parameter("TcpAddress");
     if (tcp.empty())
@@ -191,12 +195,14 @@ void UnicornSerialADC::OnInitialize(const SignalProperties &)
     mPort = mTcpAddress.empty() ? ResolvePort() : "";
     mMaxGapFill = Parameter("MaxGapFill");
     mDataTimeoutS = Parameter("DataTimeout");
+    mStartupTimeoutS = Parameter("StartupTimeout");
     // Never write a parameter here (gUnicornADC sets ID_Amp at this point): the change is sent on to
     // the other modules, and if it reaches one that has already started running, BCI2000 reports
     // "Unexpected Param message" and shuts the system down. The device is named in the log instead
     // (OnStartAcquisition), and synthetic data marks itself in the gyroscope states.
-    // Opening the port and starting acquisition takes the headset a moment.
-    SetInitialAcquisitionTimeout(Time::Seconds(mDataTimeoutS + 2));
+    // The headset's first bytes arrive 3.5-4 s after the port opens (Bluetooth link setup, measured on
+    // the real headset); BCI2000's own wait for the first block must outlast our startup allowance.
+    SetInitialAcquisitionTimeout(Time::Seconds(mStartupTimeoutS + 2));
 }
 
 void UnicornSerialADC::OnStartAcquisition()
@@ -221,6 +227,7 @@ void UnicornSerialADC::OnStartAcquisition()
         throw bcierr << "Could not start the headset: " << e.what();
     }
     mLastData = std::chrono::steady_clock::now();
+    mGotData = false;
     bciout << "Unicorn: acquiring from " << mpSource->Describe();
 }
 
@@ -240,11 +247,15 @@ void UnicornSerialADC::ReadMore()
     if (n == 0)
     {
         double silent = std::chrono::duration<double>(now - mLastData).count();
-        if (silent > mDataTimeoutS)
+        if (!mGotData && silent > mStartupTimeoutS)
+            throw bcierr << "Unicorn: the headset sent nothing for " << silent << " s after the port opened; "
+                         << "is it switched on, paired, and not connected to another program?";
+        if (mGotData && silent > mDataTimeoutS)
             throw bcierr << "Unicorn: no data from the headset for " << silent << " s; the link is down";
         return;
     }
     mLastData = now;
+    mGotData = true;
     mPayloads.clear();
     mpFramer->Feed(buf, n, mPayloads);
     for (const Unicorn::Payload &p : mPayloads)

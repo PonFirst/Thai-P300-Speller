@@ -138,3 +138,18 @@ def test_a_gap_longer_than_max_gap_fill_stops_the_run(tmp_path):
     counter = st["Counter"].astype(np.int64)
     assert counter.max() == 1749, "the recording must end at the last sample before the refused gap"
     assert np.all(np.diff(counter) == 1) and np.all(st["Validation"] == 1)
+
+
+def test_a_headset_that_takes_seconds_to_start_streaming_is_waited_for(tmp_path):
+    # The real headset's first bytes arrive 3.5-4 s after the port opens (Bluetooth link setup, measured
+    # 2026-10-06). The module used to give up after DataTimeout (3 s): the first real-headset run failed.
+    # 6 s is beyond both old limits (DataTimeout 3 s, BCI2000's initial wait 5 s).
+    fake = FakeUnicorn(signal=signal, counter_start=0, start_delay_s=6.0).start()
+    try:
+        files, log = run_bci2000(tmp_path, f"127.0.0.1:{fake.port}", seconds=6)
+    finally:
+        fake.stop()
+    assert len(files) == 1, log
+    _, sig, st = read_dat(files[0])
+    counter = st["Counter"].astype(np.int64)
+    assert sig.shape[1] >= 4 * 250 and np.all(np.diff(counter) == 1) and np.all(st["Validation"] == 1)

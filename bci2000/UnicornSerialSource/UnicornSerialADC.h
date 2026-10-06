@@ -57,7 +57,8 @@ class UnicornSerialADC : public BufferedADC
     std::vector<int> mChannelList;
     std::string mPort, mTcpAddress;
     long mMaxGapFill = 0;
-    double mDataTimeoutS = 3.0;
+    double mDataTimeoutS = 3.0, mStartupTimeoutS = 10.0;
+    bool mGotData = false;     // any bytes since the port opened: before them, StartupTimeout applies
     std::chrono::steady_clock::time_point mLastData;
     long mBadPayloads = 0;
     bool mSyntheticReported = false;
