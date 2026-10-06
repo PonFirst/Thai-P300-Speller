@@ -18,6 +18,12 @@ is inline SVG built directly from the data above.
 session ran against a manifest, the fit report of that manifest's classifier. --inference-log
 reads a service log on its own (no session or fit report unless --fit-report is given).
 
+A BCI2000 recording (--recording <run>.dat, from CheckerboardSpeller) is read through
+pipeline/bci2000_session.py, which turns the run's states and the speller's .applog into the same
+records the inference service logs; its fit report is found by the classifier's model id in
+models/. BCI2000 sessions are closed-loop, so they also report the flashes actually SHOWN per
+character (more than the controller used: results lag their flashes by ~1.3 s) and an ITR on that.
+
 What it reports, from the inference log:
   accuracy      over characters whose target the stimulus announced (the log's `correct`),
                 with a 95% Wilson interval. Thirty to forty characters give a wide interval;
@@ -161,6 +167,7 @@ def summarize_inference(records: list[dict], *, seconds_per_flash: float,
             "n_flashes": c.get("n_flashes_used") if c else len(t["flashes"]),
             "reason": c.get("reason") if c else None,
             "final_max_prob": c.get("max_prob") if c else None,
+            "n_flashes_presented": c.get("n_flashes_presented") if c else None,
             "n_rejected_flashes": len(t["rejected"]),
         })
 
@@ -176,6 +183,14 @@ def summarize_inference(records: list[dict], *, seconds_per_flash: float,
         itr = wolpaw_itr(accuracy, n_chars, seconds_per_selection)
         if overhead_s > 0:
             itr_with_overhead = wolpaw_itr(accuracy, n_chars, seconds_per_selection + overhead_s)
+
+    # Closed-loop sessions (BCI2000) also record the flashes actually shown: the user's real cost.
+    shown = [r["n_flashes_presented"] for r in scored]
+    mean_shown = itr_shown = None
+    if scored and all(v is not None for v in shown):
+        mean_shown = _mean(shown)
+        if mean_shown:
+            itr_shown = wolpaw_itr(accuracy, n_chars, mean_shown * seconds_per_flash)
 
     rejected = Counter(r.get("reason") for t in trials for r in t["rejected"])
 
@@ -208,6 +223,7 @@ def summarize_inference(records: list[dict], *, seconds_per_flash: float,
         "mean_flashes": mean_flashes, "median_flashes": _median(r["n_flashes"] for r in scored),
         "seconds_per_flash": seconds_per_flash, "seconds_per_selection": seconds_per_selection,
         "itr_bits_per_min": itr, "overhead_s": overhead_s, "itr_with_overhead_bits_per_min": itr_with_overhead,
+        "mean_flashes_presented": mean_shown, "itr_presented_bits_per_min": itr_shown,
         "reasons": dict(Counter(r["reason"] for r in committed)),
         "rejected_flashes": dict(rejected), "n_rejected_flashes": sum(rejected.values()),
         "lm": lm, "trials": rows,
@@ -292,10 +308,59 @@ def find_fit_report(session: dict | None) -> Path | None:
     return report if report.is_file() else None
 
 
+def find_fit_report_for_model(model_id: str | None, models_dir=REPO_ROOT / "models") -> Path | None:
+    """The fit report whose classifier checkpoint has this sha256 (a BCI2000 run's RiemannModelID)."""
+    if not model_id:
+        return None
+    for path in sorted(Path(models_dir).glob("*_fit_report.json")):
+        report = xlog.read_json_if_exists(path) or {}
+        if ((report.get("artifacts") or {}).get("classifier") or {}).get("sha256") == model_id:
+            return path
+    return None
+
+
+def load_bci2000_experiment(recording, *, fit_report=None, seconds_per_flash=None, overhead_s: float = 0.0,
+                            models_dir=REPO_ROOT / "models") -> dict:
+    from pipeline.bci2000_dat import DatError, read_dat
+    from pipeline.bci2000_recording import RecordingError
+    from pipeline import bci2000_session as bs
+    from pipeline.fit_from_recording import dat_synthetic_reason
+
+    try:
+        dat = read_dat(recording)
+        applog = bs.find_applog(recording)
+        records = bs.session_records(dat, applog.read_text(encoding="utf-8", errors="replace") if applog else None)
+        spf = seconds_per_flash or bs.seconds_per_flash(dat) or DEFAULT_SECONDS_PER_FLASH
+    except (DatError, RecordingError, bs.SessionError) as exc:
+        raise SummaryError(str(exc)) from exc
+    summary = summarize_inference(records, seconds_per_flash=spf, overhead_s=overhead_s)
+    if summary["n_trials_started"] == 0:
+        raise SummaryError(f"{recording}: no selections in this run")
+    synthetic = dat_synthetic_reason(dat)
+    targets = [r["target_char"] for r in records if r.get("event") == "trial_start" and r.get("target_char")]
+    p = lambda name: dat.param_str(name) if name in dat.params else None  # noqa: E731
+    session = {"session_id": Path(recording).stem,
+               "kind": "BCI2000 " + ("copy spelling" if p("InterpretMode") == "2" else "free spelling"),
+               "demo": synthetic is not None, "started_utc": p("StorageTime"), "ended_utc": None,
+               "targets_text": p("TextToSpell"), "target_sequence": targets,
+               "synthetic_reason": synthetic, "applog": applog.as_posix() if applog else None}
+    model_id = (records[0].get("manifest_fingerprint") if records else None)
+    report_path = Path(fit_report) if fit_report else find_fit_report_for_model(model_id, models_dir)
+    report = xlog.read_json_if_exists(report_path) if report_path else None
+    if fit_report and report is None:
+        raise SummaryError(f"cannot read fit report {fit_report}")
+    return {"session": session, "fit_report": report,
+            "fit_report_path": report_path.as_posix() if report_path else None,
+            "inference_log": Path(recording).as_posix(), "unparseable_log_lines": 0, "inference": summary}
+
+
 def load_experiment(*, recording=None, inference_log=None, fit_report=None,
                     seconds_per_flash=None, overhead_s: float = 0.0) -> dict:
     if (recording is None) == (inference_log is None):
         raise SummaryError("give exactly one of --recording and --inference-log")
+    if recording is not None and Path(recording).suffix.lower() == ".dat":
+        return load_bci2000_experiment(recording, fit_report=fit_report, seconds_per_flash=seconds_per_flash,
+                                       overhead_s=overhead_s)
     session = None
     if recording is not None:
         session = xlog.read_json_if_exists(xlog.session_record_path(recording))
@@ -388,6 +453,9 @@ def format_report(exp: dict) -> str:
         out.append(f"  ITR          {inf['itr_bits_per_min']:.1f} bits/min (Wolpaw, N={inf['n_chars']}, flash time only)"
                    + (f";  {inf['itr_with_overhead_bits_per_min']:.1f} bits/min with {inf['overhead_s']:g} s overhead"
                       if inf["itr_with_overhead_bits_per_min"] is not None else ""))
+        if inf.get("itr_presented_bits_per_min") is not None:
+            out.append(f"  shown        mean {inf['mean_flashes_presented']:.1f} flashes per character actually shown "
+                       f"(closed loop; results lag ~1.3 s) -> ITR {inf['itr_presented_bits_per_min']:.1f} bits/min")
     else:
         out.append("  accuracy     n/a: no committed character had a known target")
     reasons = ", ".join(f"{k} {v}" for k, v in sorted(inf["reasons"].items())) or "none"
@@ -701,7 +769,8 @@ def build_html_report(exp: dict, *, benchmark: dict | None = None) -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m stopping.summarize_experiment",
                                      description="Summarize an experiment from its logs.")
-    parser.add_argument("--recording", help="recording CSV; finds its session record and inference log")
+    parser.add_argument("--recording", help="recording CSV (finds its session record and inference log), "
+                                            "or a BCI2000 .dat from CheckerboardSpeller")
     parser.add_argument("--inference-log", help="an inference service log, read on its own")
     parser.add_argument("--fit-report", help="fit report to include (default: found via the session's manifest)")
     parser.add_argument("--seconds-per-flash", type=float, default=None,

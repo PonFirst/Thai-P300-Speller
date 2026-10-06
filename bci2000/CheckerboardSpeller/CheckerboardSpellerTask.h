@@ -18,20 +18,30 @@
 //   - Copy mode cues each character of TextToSpell in turn (lit in CueColor during
 //     the pre-sequence pause), and moves to the next one after every selection
 //     whatever was selected, as the Python stimulus did for calibration.
-//   - A character's evidence is the mean score of its scored flashes, not StimulusTask's sum, so a
-//     flash the classifier rejected does not bias the selection (see OnClassResult).
+//   - Bayesian dynamic stopping (StoppingRule 1, the default): each character starts from the
+//     language-model prior of the text spelled so far (the Thai Transformer, ThaiGPT.h, or uniform),
+//     every classifier result updates the posterior (BayesianStopping.h, a port of
+//     stopping/bayesian_stopping.py), and once it stops no further flashes are shown: the session is
+//     closed-loop. If the flashes run out first, the posterior's argmax is selected (as the Python
+//     service's trial-end commit). States PosteriorMax (float32), PosteriorArgmax, StoppingFlashes and
+//     StopReason record it; the speller log has each character's full prior.
+//   - StoppingRule 0: the mean score of each character's scored flashes after all flashes (not
+//     StimulusTask's sum, under which a rejected flash would count as 0 and bias the selection).
 //   - Cells look like the Python stimulus: idle text on the background, and a
 //     flashing cell inverted (IntensifiedBackgroundColor box, IntensifiedTextColor).
 ////////////////////////////////////////////////////////////////////////////////
 #ifndef CHECKERBOARD_SPELLER_TASK_H
 #define CHECKERBOARD_SPELLER_TASK_H
 
+#include "BayesianStopping.h"
 #include "CheckerboardSequence.h"
+#include "ThaiGPT.h"
 #include "Speller.h"
 #include "StatusBar.h"
 #include "StimulusTask.h"
 #include "TextStimulus.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -83,6 +93,7 @@ class CheckerboardSpellerTask : public StimulusTask, public Speller
     void OnStimulusEnd(int stimulusCode) override;
     void OnPostRun() override;
     Target *OnClassResult(const ClassResult &) override;
+    void OnClassInput(int stimulusCode, const GenericSignal &) override;
     int OnNextStimulusCode() override;
     // Speller events
     void OnEnter(const std::string &) override;
@@ -91,6 +102,9 @@ class CheckerboardSpellerTask : public StimulusTask, public Speller
     void StartSelection();
     void ClearObjects();
     void SetFlashStates(int stimulusCode);
+    void SetPosteriorStates();
+    Target *SelectByMeanScore(const ClassResult &, size_t &epochs);
+    std::vector<double> CurrentPrior() const;
 
     // Configuration
     int mNumRows = 0, mNumCols = 0, mNumChars = 0, mNumberOfSequences = 0, mInterpretMode_ = 0;
@@ -112,6 +126,14 @@ class CheckerboardSpellerTask : public StimulusTask, public Speller
     bool mInSelection = false;
     int mSelections = 0;
     bool mHadResults = false; // OnClassResult ran for the current selection
+
+    // Bayesian stopping
+    bool mBayesian = false;
+    BayesianStopping::Controller mController;
+    bool mStopped = false, mEndEarly = false;
+    int mDecision = -1, mStopReason = 0, mPresented = 0;
+    std::unique_ptr<ThaiGPT::Model> mpLanguageModel; // null: uniform prior
+    std::vector<int> mMatrixTokenIds;
 
     std::string mText; // spelled so far
 };

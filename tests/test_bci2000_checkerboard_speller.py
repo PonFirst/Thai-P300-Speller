@@ -71,6 +71,7 @@ Set parameter SubjectName cbtest
 Set parameter InterpretMode 2
 Set parameter TextToSpell {encode(TEXT)}
 Set parameter NumberOfSequences {REPS}
+Set parameter StoppingRule 0
 Set parameter PreSequenceDuration 1s
 Set parameter PostSequenceDuration 1.5s
 Set config

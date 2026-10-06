@@ -57,19 +57,57 @@ Two settings matter for P3SignalProcessing. Each flash has its own stimulus code
 
 **Still to check by eye:** Thai rendering in the speller window. BCI2000 draws text in Helvetica, and macOS substitutes a Thai font. Look at the tone and vowel marks before real use, including the lone combining marks in their own cells.
 
+## Session runs: `run_session.sh`
+
+One command per run, configured identically every time. Recordings go to `collection/recordings/bci2000/<Subject><Session>/` (gitignored); `--data DIR` changes that.
+
+```bash
+bci2000/run_session.sh check     --subject S01      # 60 s, cued: 20 s blinks, 20 s eyes closed, 20 s jaw
+bci2000/run_session.sh calibrate --subject S01 --text "<calibration sentence>"          # 5 repetitions
+bci2000/run_session.sh online    --subject S01 --model models/S01_bci2000.prm --text "<sentence>" \
+                                 [--condition transformer|uniform|fixed]                 # scored copy spelling
+bci2000/run_session.sh online    --subject S01 --model models/S01_bci2000.prm --free     # free spelling
+```
+
+- **Conditions:** `transformer` (the default) is Bayesian stopping with the model's Transformer prior; `uniform` is the same stopping without the LM (the no-LM control); `fixed` is no stopping, every flash, best mean score. The parameters each run used are stored in its `.dat`.
+- **Before anything starts**, the script refuses a text with characters outside the matrix, a missing model, a model without the Transformer prior under `transformer`, a stale `ThaiCheckerboard.prm`, a running BCI2000, or no `/dev/cu.UN-*` port.
+- **The Operator opens configured:** check the signal in the Source window, then press Start. The script ends with the run, prints BCI2000's errors if any, and prints the next command (fit, summary or montage check).
+- **Rehearse without the headset:** `--fake` uses `tools/fake_unicorn_bt.py`, whose data marks itself synthetic; `--auto` starts the run without waiting for Start.
+
+**Afterwards:**
+- **Check run:** `$PY tools/h13_montage_check.py <.dat>` gives TESTING.md H13 (biggest blink at Fz, alpha at Oz/PO7/PO8, jaw at C3/C4) and H3 (units).
+- **Online run:** `$PY -m stopping.summarize_experiment --recording <.dat>` gives accuracy with Wilson CI, Wolpaw ITR and the LM effect. It reports two ITRs: one on the flashes the controller used, and one on the flashes shown (the closed-loop figure).
+- **Replay:** `$PY -m stopping.evaluate_recording --recording <.dat>` replays the run's flashes under other θ, t_min or LM settings.
+
+Both read the session through `pipeline/bci2000_session.py`. It takes each character's cue, prior, classifier results, stop and selection from the `.dat` states, and the full prior from the `.applog`. BCI2000 keeps one `.applog` per session folder for all its runs, so the speller writes `RUN <id>` before a run's `PRIOR` lines and records the same id in the `SpellerRunID` state.
+
 ## Calibrate, fit, spell
+
+What `run_session.sh` does, by hand in the Operator:
 
 1. **Calibration session.** Launch **UnicornSerialSource**, **DummySignalProcessing** and **CheckerboardSpeller**. Load `parms/ThaiCheckerboard.prm`, set `InterpretMode` 2 and `TextToSpell` to the calibration sentence, then run. BCI2000 writes `<DataDirectory>/<Subject><Session>/<Subject>S<session>R<run>.dat`.
 2. **Fit** from that file:
    ```bash
-   $PY -m pipeline.fit_from_recording --recording <path>.dat --id subject_001
+   $PY -m pipeline.fit_from_recording --recording <path>.dat --id subject_001 \
+       --lm-transformer-checkpoint models/thai_gpt_checkpoint.pt
    ```
+   - `subject_001_bci2000.prm` then also switches on Bayesian stopping, with the manifest's λ, θ, t_min, t_max and clip.
+   - It also writes `subject_001_lm.lmbin`, the Transformer's weights for the speller, and points `LanguageModelFile` at it.
+   - Omit the flag for the uniform prior. The n-gram has no BCI2000 port.
    This writes the usual checkpoint, Platt calibration, manifest and fit report, plus `models/subject_001_bci2000.prm`, the model for BCI2000.
    - Flash onsets come from `StimulusCode`, labels from `StimulusType`, and each selection is one cross-validation group.
    - Epochs touching lost Bluetooth samples are rejected.
    - Fake-headset data is refused unless you pass `--allow-demo`.
 3. **Online session.** Launch **UnicornSerialSource**, **CheckerboardSignalProcessing** and **CheckerboardSpeller**. Load `parms/ThaiCheckerboard.prm`, **then** `models/subject_001_bci2000.prm`, then run.
    - The filter refuses to start on a different montage, sampling rate, source-side filter, or an `EpochLength` shorter than its result latency.
+
+**Bayesian stopping and the language-model prior** (`CheckerboardSpeller`, `StoppingRule` 1):
+- **At each character's start:** the speller computes the Thai Transformer's prior from the text spelled so far. `ThaiGPT.h` is a C++ forward pass equal to the PyTorch `get_prior` within about 1e-6, taking about 5 ms.
+- **On each classifier result:** your controller updates. `BayesianStopping.h` is a line-by-line port of `stopping/bayesian_stopping.py`.
+- **When it stops:** no further flashes are shown, so the session is closed-loop. If the flashes run out first, the argmax is selected.
+- **Recorded:** the states `PosteriorMax`, `PosteriorArgmax`, `StoppingFlashes` and `StopReason` (1 threshold, 2 t_max, 3 ran out). The `.applog` gets each character's full prior (`PRIOR` lines).
+- **Size `NumberOfSequences`** so that 24 × repetitions covers the most flashes you want to allow.
+- **`StoppingRule` 0** gives the old mean-score rule after all flashes. Use it with BCI2000's stock P3 classifier, which has no Platt calibration.
 
 **What isn't scored:** the filter rejects a flash, online and in every offline path alike, when:
 - its window touches a lost or counter-break sample;
@@ -97,5 +135,8 @@ BCI2000's clock is the sample count, so a lost sample has to keep its slot. Othe
 - `tests/test_bci2000_checkerboard.py` checks that the C++ checkerboard gives the same groups as `flash_sequence.py` for the same shuffles, and that the parameter file is current.
 - `tests/test_bci2000_checkerboard_speller.py` runs the speller in BCI2000 and checks the `.dat` flash by flash. It opens a window, so it runs only with `BCI2000_GUI_TESTS=1`.
 - `tests/test_bci2000_riemann.py` checks that the C++ classifier arithmetic equals the fitted sklearn/pyriemann pipeline and its numpy specification within 1e-9.
+- `tests/test_bci2000_session.py` checks the session reader, the `.dat` paths of the summary, replay and montage tools, and the launcher's refusals.
 - `tests/test_bci2000_classifier_e2e.py` runs calibrate → fit → online in BCI2000 and checks online against offline flash by flash. It opens a window, so it runs only with `BCI2000_GUI_TESTS=1`.
+- `tests/test_bci2000_stopping.py` checks the C++ controller against `BayesianStoppingController` on 40 random flash sequences, and the C++ Transformer prior against PyTorch on 36 contexts.
+- `tests/test_bci2000_stopping_e2e.py` runs closed-loop BCI2000 sessions covering threshold, t_max and ran-out stops, and replays every decision with the Python originals (opt-in, `BCI2000_GUI_TESTS=1`).
 - `tests/test_bci2000_unicorn_source.py` runs BCI2000 against the fake headset and reads the `.dat` with BCI2000's own `BCI2000Tools.FileReader`. It skips when BCI2000 isn't built, and when another BCI2000 source module is running.

@@ -293,13 +293,32 @@ def render_prm(m: ExportedModel, provenance: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def stopping_lines(stopping: dict, lm_file: Path | None) -> list[str]:
+    """CheckerboardSpeller's Bayesian-stopping and language-model parameters (bci2000/CheckerboardSpeller):
+    the manifest's stopping settings, and the Transformer export (or the uniform prior when None)."""
+    sec, lmsec = "Application:Bayesian%20Stopping", "Application:Language%20Model"
+    return [
+        f"{sec} int StoppingRule= 1 1 0 1 // Bayesian dynamic stopping (enumeration)",
+        f"{sec} float StoppingLambda= {_num(stopping['lam'])} 0.7 0 1 // prior blend weight",
+        f"{sec} float StoppingTheta= {_num(stopping['theta'])} 0.9 0 1 // stopping threshold",
+        f"{sec} int StoppingTMin= {int(stopping['t_min'])} 6 0 % // flashes before stopping is allowed",
+        f"{sec} int StoppingTMax= {int(stopping['t_max'])} 170 1 % // forced stop",
+        f"{sec} float StoppingLLRClip= {_num(stopping['llr_clip'])} 8 0 % // per-flash LLR clip",
+        f"{lmsec} int LanguageModel= {1 if lm_file is not None else 0} 1 0 1 "
+        "// 0 uniform, 1 Thai Transformer (enumeration)",
+        f"{lmsec} string LanguageModelFile= {_bci_encode(str(Path(lm_file).resolve())) if lm_file else '%'} "
+        "% % % // .lmbin written by pipeline/bci2000_lm_export.py",
+    ]
+
+
 def export_prm(checkpoint_path, calibration_path, out_path, provenance: dict | None = None,
-               gate_policy: str = GATE_SKIP) -> Path:
+               gate_policy: str = GATE_SKIP, extra_lines: list[str] | None = None) -> Path:
     m = extract_model(checkpoint_path, calibration_path, gate_policy)
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(f".{out.name}.tmp")
-    tmp.write_text(render_prm(m, provenance or {}), encoding="utf-8")
+    text = render_prm(m, provenance or {}) + "".join(line + "\n" for line in (extra_lines or []))
+    tmp.write_text(text, encoding="utf-8")
     tmp.replace(out)
     return out
 

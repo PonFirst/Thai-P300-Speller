@@ -66,7 +66,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import GroupKFold
 
 from collection.unicorn_protocol import SYNTHETIC_GYRO_COUNTS  # the fake headset's gyroscope marker
-from pipeline import bci2000_export
+from pipeline import bci2000_export, bci2000_lm_export
 from pipeline import experiment_log as xlog
 from pipeline.bci2000_dat import DatError, read_dat
 from pipeline.bci2000_recording import RecordingError, counter_breaks, eeg_microvolts, flash_events
@@ -74,7 +74,7 @@ from pipeline.classifier_io import CheckpointError, library_versions, load_build
 from pipeline.constants import EEG_CHANNELS, EEG_SFREQ
 from pipeline.epoching import RANK_DEFICIENT, EpochSpec, extract_epochs, is_rank_deficient
 from pipeline.language_model import LanguageModelError
-from pipeline.manifest import (CALIBRATION_FORMAT, REPO_ROOT, SCORE_METHOD, ManifestError,
+from pipeline.manifest import (CALIBRATION_FORMAT, DEFAULT_STOPPING, REPO_ROOT, SCORE_METHOD, ManifestError,
                                build_manifest_dict, load_characters_file, sha256_file, write_manifest)
 from stopping.calibrate import PlattCalibrator, expected_calibration_error
 
@@ -344,6 +344,9 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
     # which would otherwise sit beside the new checkpoint and load the previous model into BCI2000.
     prm_path = bci2000_prm_path(ckpt_path)
     writes_prm = dat is not None
+    # The speller's own copy of the Transformer prior (bci2000_lm_export); the same ownership rule.
+    lm_bin_path = prm_path.with_name(prm_path.name.replace("_bci2000.prm", "_lm.lmbin"))
+    writes_lm_bin = writes_prm and lm_transformer_checkpoint is not None
     warnings = []
     console: list[str] = []  # everything logged below, kept for the fit report
     t_start = time.monotonic()
@@ -355,7 +358,7 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
     report_path = xlog.fit_report_path(ckpt_path)
     if demo and manifest_path is not None and not man_path.name.startswith(DEMO_PREFIX):
         warnings.append(f"demo recording, but --manifest {man_path} is not demo_-prefixed")
-    existing = [str(p) for p in (ckpt_path, cal_path, man_path, report_path, prm_path) if p.exists()]
+    existing = [str(p) for p in (ckpt_path, cal_path, man_path, report_path, prm_path, lm_bin_path) if p.exists()]
     if existing and not force:
         raise FitError(f"refusing to overwrite existing artifact(s) {existing}; pass --force to replace them")
     if n_splits < 2:
@@ -363,6 +366,9 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
     load_characters_file(characters_path)
     if lm_corpus is not None and lm_transformer_checkpoint is not None:
         raise FitError("--lm-corpus and --lm-transformer-checkpoint are mutually exclusive; pick one LM")
+    if dat is not None and lm_corpus is not None:
+        raise FitError("BCI2000's speller has the Transformer and the uniform prior; the n-gram (--lm-corpus) is "
+                       "not ported to it. Use --lm-transformer-checkpoint, or neither for the uniform prior")
     if lm_corpus is not None and not Path(lm_corpus).is_file():
         raise FitError(f"--lm-corpus not found: {lm_corpus}")
     if lm_transformer_checkpoint is not None and not Path(lm_transformer_checkpoint).is_file():
@@ -430,14 +436,22 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
     if writes_prm:
         # Before the manifest: a failed export must not leave a new manifest beside an old model file.
         try:
+            if writes_lm_bin:
+                bci2000_lm_export.export_lm(lm_transformer_checkpoint, lm_bin_path, characters_path)
+                emit(f"BCI2000 language model: {lm_bin_path}")
+            elif lm_bin_path.exists():
+                lm_bin_path.unlink()      # --force refit with the uniform prior: the old LM is not this model's
             bci2000_export.export_prm(ckpt_path, cal_path, prm_path, {
                 "recording": rec.path.name, "recording_sha256": rec.sha256, "subject_id": subject_id,
-                "demo": demo, "n_epochs": int(len(y)), "n_targets": n_targets, "out_of_fold_auc": round(auc, 4)})
-        except bci2000_export.ExportError as exc:
+                "demo": demo, "n_epochs": int(len(y)), "n_targets": n_targets, "out_of_fold_auc": round(auc, 4)},
+                extra_lines=bci2000_export.stopping_lines(DEFAULT_STOPPING, lm_bin_path if writes_lm_bin else None))
+        except (bci2000_export.ExportError, bci2000_lm_export.LMExportError) as exc:
             raise FitError(f"BCI2000 export: {exc}") from exc
         emit(f"BCI2000 classifier parameters: {prm_path}")
-    elif prm_path.exists():
-        prm_path.unlink()          # --force refit from a CSV: the old BCI2000 model is no longer this subject's
+    elif prm_path.exists() or lm_bin_path.exists():
+        for stale in (prm_path, lm_bin_path):   # --force refit from a CSV: the old BCI2000 model is no longer this subject's
+            if stale.exists():
+                stale.unlink()
         emit(f"removed the previous BCI2000 model {prm_path} (this fit is from a CSV recording)")
     if lm_corpus is not None:
         lm = {"type": "ngram", "corpus_path": Path(lm_corpus)}

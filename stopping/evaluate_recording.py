@@ -10,6 +10,12 @@ stopping/validate_offline.py's fabricated-grid sanity check.
         [--theta 0.7 0.8 0.9 0.95] [--t-min 1 3 6] [--t-max 170] [--lam 0.7] \\
         [--out results/replay/<name>.csv] [--allow-demo]
 
+The recording may also be a BCI2000 .dat from CheckerboardSpeller (load_bci2000_for_replay):
+flashes, groups and onsets come from its states (pipeline/bci2000_recording.py), each selection's
+target from its cue (AttendedChar), and samples lost to the Bluetooth link are NaN, so their epochs
+are rejected exactly as the BCI2000 classifier rejected them online. Data from anything but the
+real headset counts as demo data (pipeline/fit_from_recording.dat_synthetic_reason).
+
 Recommended use: replay a session that was NOT used to fit the checkpoint
 (a held-out test/copy-spelling session), so the reported numbers describe
 generalization, not the fit. Nothing here enforces that -- the recording
@@ -107,15 +113,38 @@ class RecordingForReplay:
     n_duplicate_flashes: int = 0
 
 
+def load_bci2000_for_replay(path, n_chars: int) -> RecordingForReplay:
+    """A CheckerboardSpeller .dat as replay input: trials are selections, targets their cues."""
+    from pipeline.bci2000_dat import DatError, read_dat
+    from pipeline.bci2000_recording import RecordingError, eeg_microvolts, flash_events
+
+    path = Path(path)
+    try:
+        dat = read_dat(path)
+        flashes = flash_events(dat)
+    except (DatError, RecordingError) as exc:
+        raise EvaluationError(str(exc)) from exc
+    if any(c >= n_chars for f in flashes for c in (*f.group, f.attended)):
+        raise EvaluationError(f"recording {path.name}: character indices beyond the manifest's {n_chars} characters")
+    replay = [ReplayFlash(trial_id=f.selection, flash_idx=f.code, onset=f.onset / EEG_SFREQ,
+                          is_target=f.is_target, group=tuple(f.group)) for f in flashes]
+    targets = {f.selection: f.attended for f in flashes}
+    return RecordingForReplay(path=path, sha256=sha256_file(path), timestamps=np.arange(dat.n_samples) / EEG_SFREQ,
+                              data=eeg_microvolts(dat), flashes=replay, targets=targets, n_rows=dat.n_samples)
+
+
 def load_recording_for_replay(path, n_chars: int) -> RecordingForReplay:
     """
     Parse a recorder CSV for replay: unlike pipeline.fit_from_recording's
     loader, this keeps each flash's group and each trial's true target --
-    the two fields replay needs and training doesn't.
+    the two fields replay needs and training doesn't. A BCI2000 .dat goes to
+    load_bci2000_for_replay.
     """
     path = Path(path)
     if not path.is_file():
         raise EvaluationError(f"recording not found: {path}")
+    if path.suffix.lower() == ".dat":
+        return load_bci2000_for_replay(path, n_chars)
     try:
         df = pd.read_csv(path, dtype={"marker_json_or_empty": str}, low_memory=False)
     except (OSError, ValueError, pd.errors.ParserError) as exc:
@@ -298,10 +327,18 @@ def assemble_trials(rec: RecordingForReplay, *, epoch_spec, gate_policy: str, ch
 def run_evaluation(manifest_path, recording_path, *, theta=None, t_min=None, t_max=None, lam=None,
                    llr_clip=None, gate_policy=None, seconds_per_flash=None, allow_demo=False,
                    log=print) -> pd.DataFrame:
-    demo = Path(recording_path).name.startswith(DEMO_PREFIX)
+    why = "demo_ prefix" if Path(recording_path).name.startswith(DEMO_PREFIX) else None
+    if why is None and Path(recording_path).suffix.lower() == ".dat" and Path(recording_path).is_file():
+        from pipeline.bci2000_dat import DatError, read_dat
+        from pipeline.fit_from_recording import dat_synthetic_reason
+        try:
+            why = dat_synthetic_reason(read_dat(recording_path))
+        except DatError as exc:
+            raise EvaluationError(str(exc)) from exc
+    demo = why is not None
     if demo and not allow_demo:
         raise EvaluationError(
-            f"recording {Path(recording_path).name} is synthetic (demo_ prefix); refusing to evaluate "
+            f"recording {Path(recording_path).name} is synthetic ({why}); refusing to evaluate "
             "against it. Pass --allow-demo to proceed anyway; results are not a real measurement.")
     if demo:
         log("*** DEMO recording: results below describe synthetic data, not real performance. ***")

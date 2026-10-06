@@ -302,6 +302,9 @@ def model(tmp_path_factory):
 
 
 def online_session(tmp, fit, fake, text=ONLINE_TEXT, extra=""):
+    # StoppingRule 0: these tests check the classifier and the mean-score rule on every flash;
+    # Bayesian stopping is tested in test_bci2000_stopping_e2e.py.
+    extra = "Set parameter StoppingRule 0\n" + extra
     body = copy_mode(text).replace("Set config", f'Load parameterfile "{fit.bci2000_prm_path}"\n{extra}\nSet config', 1)
     return run_bci2000(tmp, "CheckerboardSignalProcessing", body, [fake], 90 + selection_seconds(text))
 

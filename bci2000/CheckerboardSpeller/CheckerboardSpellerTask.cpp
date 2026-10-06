@@ -108,6 +108,18 @@ CheckerboardSpellerTask::CheckerboardSpellerTask()
             "// status bar text height in percent of screen height",
         "Application:Speller string TextToSpell= % % % % // text to spell in copy mode, one cue per character",
         "Application:Speller string TextResult= % % % % // spelling result",
+        "Application:Bayesian%20Stopping int StoppingRule= 1 1 0 1 "
+            "// 0: mean score after all flashes, 1: Bayesian dynamic stopping (enumeration)",
+        "Application:Bayesian%20Stopping float StoppingLambda= 0.7 0.7 0 1 "
+            "// prior blend: p0 = lambda * LM prior + (1 - lambda) / characters",
+        "Application:Bayesian%20Stopping float StoppingTheta= 0.9 0.9 0 1 // stop once the posterior max reaches this",
+        "Application:Bayesian%20Stopping int StoppingTMin= 6 6 0 % // flashes before stopping is allowed",
+        "Application:Bayesian%20Stopping int StoppingTMax= 170 170 1 % // forced stop after this many flashes",
+        "Application:Bayesian%20Stopping float StoppingLLRClip= 8 8 0 % // clip on each flash's log-likelihood ratio",
+        "Application:Language%20Model int LanguageModel= 0 0 0 1 "
+            "// 0: uniform prior, 1: Thai Transformer (LanguageModelFile); the fitted model's .prm sets it (enumeration)",
+        "Application:Language%20Model string LanguageModelFile= % % % % "
+            "// .lmbin written by pipeline/bci2000_lm_export.py (absolute path)",
     END_PARAMETER_DEFINITIONS
 
     BEGIN_STATE_DEFINITIONS
@@ -119,6 +131,11 @@ CheckerboardSpellerTask::CheckerboardSpellerTask()
         "FlashChar6 7 0 0 0",
         "AttendedChar 7 0 0 0",
         "SelectedChar 7 0 0 0",
+        "PosteriorMax 32 0 0 0",    // float32 bits: the posterior maximum after the latest update
+        "PosteriorArgmax 7 0 0 0",  // 1-based character with that maximum
+        "StoppingFlashes 16 0 0 0", // flashes the controller has used for this character
+        "StopReason 2 0 0 0",       // 1 threshold, 2 t_max, 3 flashes ran out (argmax selected)
+        "SpellerRunID 31 0 0 0",    // random per run; the .applog's "RUN <id>" line starts that run's entries
     END_STATE_DEFINITIONS
 }
 
@@ -206,6 +223,53 @@ void CheckerboardSpellerTask::OnPreflight(const SignalProperties &) const
         if (!speller.TrySpelling(text))
             bcierr << "TextToSpell contains characters that are not in the matrix";
     }
+
+    // Bayesian stopping
+    const bool bayesian = Parameter("StoppingRule") == 1;
+    double lam = Parameter("StoppingLambda"), theta = Parameter("StoppingTheta"), clip = Parameter("StoppingLLRClip");
+    int tMin = Parameter("StoppingTMin"), tMax = Parameter("StoppingTMax");
+    if (bayesian)
+    {
+        if (!(lam >= 0 && lam <= 1) || !(theta > 0 && theta < 1) || !(clip > 0) || tMax < 1 || tMin < 0 || tMin > tMax)
+            bcierr << "Bayesian stopping needs 0 <= StoppingLambda <= 1, 0 < StoppingTheta < 1, StoppingLLRClip > 0 "
+                   << "and 0 <= StoppingTMin <= StoppingTMax, StoppingTMax >= 1";
+        // The controller needs Platt-calibrated scores: CheckerboardSignalProcessing's model provides a and b.
+        // With no classifier at all (DummySignalProcessing, for calibration) nothing is ever selected.
+        if (!Parameters->Exists("RiemannPlattA") && Parameters->Exists("Classifier"))
+            bcierr << "Bayesian stopping needs CheckerboardSignalProcessing (Platt-calibrated scores); "
+                   << "with another classifier set StoppingRule to 0";
+    }
+    // Initialize reads the calibration whenever the classifier provides it, so preflight must too
+    // (BCI2000 refuses a parameter first read during initialization).
+    if (Parameters->Exists("RiemannPlattA"))
+    {
+        Parameter("RiemannPlattA");
+        Parameter("RiemannPlattB");
+    }
+    if (Parameter("LanguageModel") == 1)
+    {
+        ThaiGPT::Model lm;
+        std::string file = Parameter("LanguageModelFile");
+        std::string err = file.empty() ? "LanguageModelFile is empty" : lm.Load(file);
+        if (!err.empty())
+            bcierr << "Language model: " << err;
+        else if (defs->NumColumns() >= 2)
+        {
+            // A checkpoint is valid only for the matrix it was trained against (CLAUDE.md): every matrix
+            // character must be one code point of its vocabulary, in the order the file was checked against.
+            std::vector<char32_t> matrix;
+            for (int i = 0; i < n; ++i)
+            {
+                std::vector<char32_t> cps = ThaiGPT::DecodeUtf8(std::string(defs(i, 1)));
+                if (cps.size() != 1 || lm.Id(cps[0]) < 0)
+                    bcierr << "Language model: matrix character " << i + 1 << " (" << std::string(defs(i, 1))
+                           << ") is not in the model's vocabulary; retrain against this matrix";
+                matrix.push_back(cps.empty() ? 0 : cps[0]);
+            }
+            if (matrix != lm.matrix)
+                bcierr << "Language model: the file was exported for a different matrix than TargetDefinitions";
+        }
+    }
 }
 
 void CheckerboardSpellerTask::OnInitialize(const SignalProperties &)
@@ -216,6 +280,32 @@ void CheckerboardSpellerTask::OnInitialize(const SignalProperties &)
     mNumberOfSequences = Parameter("NumberOfSequences");
     mInterpretMode_ = Parameter("InterpretMode");
     mTextToSpell = mInterpretMode_ == InterpretModes::Copy ? std::string(Parameter("TextToSpell")) : "";
+
+    mBayesian = Parameter("StoppingRule") == 1;
+    mController = BayesianStopping::Controller();
+    mController.nChars = Parameter("TargetDefinitions")->NumRows();
+    mController.lam = Parameter("StoppingLambda");
+    mController.theta = Parameter("StoppingTheta");
+    mController.tMin = Parameter("StoppingTMin");
+    mController.tMax = Parameter("StoppingTMax");
+    mController.llrClip = Parameter("StoppingLLRClip");
+    if (Parameters->Exists("RiemannPlattA")) // the classifier's calibration (pipeline/fit_from_recording.py)
+    {
+        mController.sigmoidA = Parameter("RiemannPlattA");
+        mController.sigmoidB = Parameter("RiemannPlattB");
+    }
+    mpLanguageModel.reset();
+    mMatrixTokenIds.clear();
+    if (Parameter("LanguageModel") == 1)
+    {
+        mpLanguageModel.reset(new ThaiGPT::Model);
+        mpLanguageModel->Load(Parameter("LanguageModelFile")); // checked in preflight
+        ParamRef defs = Parameter("TargetDefinitions");
+        for (int i = 0; i < defs->NumRows(); ++i)
+            mMatrixTokenIds.push_back(mpLanguageModel->Id(ThaiGPT::DecodeUtf8(std::string(defs(i, 1)))[0]));
+        bciout << "Language model: Thai Transformer " << mpLanguageModel->checkpointSha.substr(0, 12) << ", "
+               << mpLanguageModel->nLayer << " layers, context " << mpLanguageModel->blockSize << " characters";
+    }
 
     if (mpStatusBar == nullptr)
         mpStatusBar = new StatusBar(Display());
@@ -255,6 +345,19 @@ void CheckerboardSpellerTask::OnInitialize(const SignalProperties &)
 
 void CheckerboardSpellerTask::OnStartRun()
 {
+    // Ties this run's .dat (the SpellerRunID state) to its entries in the session's .applog, which
+    // BCI2000 shares between all runs of a session. std::random_device, not RandomNumberGenerator,
+    // so the flash shuffle stays reproducible from RandomSeed.
+    const uint32_t runId = 1 + std::random_device()() % 0x7FFFFFFE;
+    State("SpellerRunID") = runId;
+    AppLog.File << "RUN " << runId << std::endl;
+    mStopped = mEndEarly = false;
+    mDecision = -1;
+    mStopReason = mPresented = 0;
+    State("PosteriorMax") = 0;
+    State("PosteriorArgmax") = 0;
+    State("StoppingFlashes") = 0;
+    State("StopReason") = 0;
     mText = std::string(Parameter("TextResult"));
     mpStatusBar->SetResultText(mText);
     mCueSequence.clear();
@@ -303,14 +406,86 @@ void CheckerboardSpellerTask::StartSelection()
     SetAttendedTarget(mAttendedChar >= 0 ? mTargets[mAttendedChar] : nullptr);
     mNextFlash = 0;
     mInSelection = true;
+    mPresented = 0;
+    mStopped = mEndEarly = false;
+    mDecision = -1;
+    mStopReason = 0;
+    if (mBayesian)
+    {
+        // The prior of the text spelled so far, as the Python service's get_prior(committed_text).
+        std::vector<double> prior = CurrentPrior();
+        mController.Reset(prior);
+        SetPosteriorStates();
+        State("StopReason") = 0;
+        std::vector<int> order(mNumChars);
+        for (int i = 0; i < mNumChars; ++i)
+            order[i] = i;
+        std::partial_sort(order.begin(), order.begin() + std::min(5, mNumChars), order.end(),
+                          [&](int a, int b) { return prior[a] > prior[b]; });
+        std::ostringstream top, full;
+        for (int k = 0; k < std::min(5, mNumChars); ++k)
+            top << " " << std::string(Parameter("TargetDefinitions")(order[k], 0)) << " " << prior[order[k]];
+        full.precision(9);
+        for (double p : prior)
+            full << " " << p;
+        AppLog << "Selection " << mSelections + 1 << " prior (" << (mpLanguageModel ? "Transformer" : "uniform")
+               << ", context \"" << mText << "\"): top" << top.str() << std::endl;
+        AppLog.File << "PRIOR " << mSelections + 1 << full.str() << std::endl;
+    }
+}
+
+std::vector<double> CheckerboardSpellerTask::CurrentPrior() const
+{
+    if (mpLanguageModel)
+        return mpLanguageModel->Prior(mText, mMatrixTokenIds);
+    return std::vector<double>(mNumChars, 1.0 / mNumChars);
+}
+
+void CheckerboardSpellerTask::SetPosteriorStates()
+{
+    StateRef maxState = State("PosteriorMax");
+    maxState.AsFloat() = static_cast<float>(mController.MaxProbability());
+    State("PosteriorArgmax") = mController.Argmax() + 1;
+    State("StoppingFlashes") = mController.t;
+}
+
+void CheckerboardSpellerTask::OnClassInput(int stimulusCode, const GenericSignal &signal)
+{
+    if (!mBayesian || mStopped || stimulusCode < 1 || stimulusCode > int(mGroups.size()))
+        return;
+    double s = 0;
+    int n = 0;
+    for (int ch = 0; ch < signal.Channels(); ++ch)
+        for (int el = 0; el < signal.Elements(); ++el, ++n)
+            s += signal(ch, el);
+    s /= std::max(n, 1);
+    const Checkerboard::Group &group = mGroups[stimulusCode - 1];
+    const double pi = static_cast<double>(group.size()) / mNumChars; // as the service: len(group) / n_chars
+    int idx = -1;
+    const bool stop = mController.Update(group, s, pi, idx);
+    SetPosteriorStates();
+    if (stop)
+    {
+        mStopped = true;
+        mEndEarly = true;
+        mDecision = idx;
+        const bool threshold = mController.t >= mController.tMin && mController.MaxProbability() >= mController.theta;
+        mStopReason = threshold ? 1 : 2;
+        State("StopReason") = mStopReason;
+        AppLog << "Selection " << mSelections + 1 << ": stopped after " << mController.t << " flash result(s) ("
+               << (threshold ? "threshold" : "t_max") << ", posterior " << mController.MaxProbability() << ", "
+               << mPresented << " flashes shown)" << std::endl;
+    }
 }
 
 int CheckerboardSpellerTask::OnNextStimulusCode()
 {
     // A zero code ends the current selection; a zero right after a zero ends the run.
-    if (mInSelection && mNextFlash == mGroups.size())
+    // Bayesian stopping ends the selection early: no more flashes once the controller has decided.
+    if (mInSelection && (mNextFlash == mGroups.size() || mEndEarly))
     {
         mInSelection = false;
+        mEndEarly = false;
         return 0;
     }
     if (!mInSelection)
@@ -319,6 +494,7 @@ int CheckerboardSpellerTask::OnNextStimulusCode()
             return 0; // everything cued: end the run
         StartSelection();
     }
+    ++mPresented;
     return static_cast<int>(++mNextFlash);
 }
 
@@ -359,14 +535,56 @@ void CheckerboardSpellerTask::OnStimulusEnd(int stimulusCode)
 
 Target *CheckerboardSpellerTask::OnClassResult(const ClassResult &inResult)
 {
+    size_t epochs = 0;
+    Target *pTarget = nullptr;
+    std::string rule;
+    if (mBayesian)
+    {
+        for (const auto &r : inResult)
+            if (Associations().find(r.first) != Associations().end())
+                epochs += r.second.size();
+        if (mStopped)
+            pTarget = mTargets[mDecision];
+        else if (mController.t >= 1)
+        {
+            // The flashes ran out before the stopping rule fired: the argmax, as the Python service's
+            // trial-end commit.
+            mDecision = mController.Argmax();
+            mStopReason = 3;
+            State("StopReason") = mStopReason;
+            pTarget = mTargets[mDecision];
+        }
+        rule = mStopReason == 1 ? "threshold" : mStopReason == 2 ? "t_max" : mStopReason == 3 ? "flashes ran out"
+                                                                                          : "no evidence";
+    }
+    else
+    {
+        pTarget = SelectByMeanScore(inResult, epochs);
+        rule = "mean score";
+    }
+    mHadResults = true;
+    int selected = pTarget ? pTarget->Tag() : 0;
+    State("SelectedChar") = selected;
+    AppLog << "Selection " << mSelections + 1 << ": " << epochs << " flash result(s) for " << mPresented
+           << " flashes; selected "
+           << (selected ? std::string(Parameter("TargetDefinitions")(selected - 1, 0)) : std::string("nothing"))
+           << " (" << rule << (mBayesian ? ", used " + std::to_string(mController.t) : std::string()) << ")"
+           << (mAttendedChar >= 0
+                   ? ", cued " + std::string(Parameter("TargetDefinitions")(mAttendedChar, 0))
+                   : std::string())
+           << std::endl;
+    return pTarget;
+}
+
+Target *CheckerboardSpellerTask::SelectByMeanScore(const ClassResult &inResult, size_t &epochs)
+{
     // Each character's evidence is the MEAN of the scores of the flashes that contained it and were
     // scored. StimulusTask's default sums them, and a flash the classifier rejected (lost samples, a
     // flat channel) then counts as 0 -- not neutral for an LDA score, whose non-target flashes sit
     // around log(1/11) or lower -- which would push the characters of rejected flashes up. A character
-    // with no scored flash at all cannot be selected. (Bayesian stopping will replace this rule.)
+    // with no scored flash at all cannot be selected.
     std::vector<double> sum(mNumChars, 0.0);
     std::vector<int> count(mNumChars, 0);
-    size_t epochs = 0;
     for (const auto &r : inResult)
     {
         auto a = Associations().find(r.first);
@@ -398,16 +616,6 @@ Target *CheckerboardSpellerTask::OnClassResult(const ClassResult &inResult)
             best = sum[i] / count[i];
             pTarget = mTargets[i];
         }
-    mHadResults = true;
-    int selected = pTarget ? pTarget->Tag() : 0;
-    State("SelectedChar") = selected;
-    AppLog << "Selection " << mSelections + 1 << ": " << epochs << " flash result(s) for " << mGroups.size()
-           << " flashes; selected "
-           << (selected ? std::string(Parameter("TargetDefinitions")(selected - 1, 0)) : std::string("nothing"))
-           << (mAttendedChar >= 0
-                   ? ", cued " + std::string(Parameter("TargetDefinitions")(mAttendedChar, 0))
-                   : std::string())
-           << std::endl;
     return pTarget;
 }
 

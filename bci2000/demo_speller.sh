@@ -67,6 +67,7 @@ Set parameter SubjectName demo
 Set parameter InterpretMode 2
 Set parameter TextToSpell $ENCODED
 Set parameter NumberOfSequences 2
+Set parameter StoppingRule 0
 Set parameter WindowLeft 0
 Set parameter WindowTop 40
 Set parameter WindowWidth 1280

@@ -154,9 +154,31 @@ def parse_prm(path) -> dict:
         if line.strip():
             p = bd.parse_param_line(line)
             assert p is not None, line
-            assert p.section == bx.PRM_SECTION
+            # the classifier's section, plus the speller's stopping and language-model settings
+            assert p.section in (bx.PRM_SECTION, "Application:Bayesian%20Stopping",
+                                 "Application:Language%20Model"), line
             params[p.name] = p
     return params
+
+
+def test_the_model_file_switches_on_bayesian_stopping_with_the_manifest_values(fitted):
+    from pipeline.manifest import DEFAULT_STOPPING
+    params = parse_prm(fitted.result.bci2000_prm_path)
+    assert params["StoppingRule"].value == "1"
+    assert float(params["StoppingLambda"].value) == DEFAULT_STOPPING["lam"]
+    assert float(params["StoppingTheta"].value) == DEFAULT_STOPPING["theta"]
+    assert int(params["StoppingTMin"].value) == DEFAULT_STOPPING["t_min"]
+    assert int(params["StoppingTMax"].value) == DEFAULT_STOPPING["t_max"]
+    assert float(params["StoppingLLRClip"].value) == DEFAULT_STOPPING["llr_clip"]
+    assert params["LanguageModel"].value == "0" and params["LanguageModelFile"].value == ""   # fitted without an LM
+
+
+def test_the_ngram_is_refused_for_a_bci2000_fit(tmp_path, rec):
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text("ก่อน", encoding="utf-8")
+    with pytest.raises(ffr.FitError, match="n-gram"):
+        ffr.fit_from_recording(rec.path, "s1", models_dir=tmp_path / "models", manifest_path=tmp_path / "m.json",
+                               lm_corpus=corpus, log=lambda s: None)
 
 
 def _matrix(p) -> np.ndarray:

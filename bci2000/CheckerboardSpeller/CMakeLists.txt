@@ -3,6 +3,7 @@
 ## P300 speller. See CheckerboardSpellerTask.h.
 ###########################################################################
 
+bci2000_include(EIGEN)
 bci2000_add_application_module(
   CheckerboardSpeller
   CheckerboardSpellerTask.cpp
