@@ -59,8 +59,10 @@ jobs:
         run: |
           choco install sliksvn --no-progress -y | Out-Null
           $svn = "C:\Program Files\SlikSvn\bin\svn.exe"
-          & $svn checkout -q -r $env:BCI2000_REVISION --username $env:SVN_USER --password $env:SVN_PASS `
-              --non-interactive --no-auth-cache https://bci2000.org/svn/trunk C:\bci2000
+          # --ignore-externals: BCI2000's svn:externals (a SignalSharing header in prog, MATLAB mex tools, a
+          # Neuroscan contrib module) are none of them built here, and fetching one failed (E205011).
+          & $svn checkout -r $env:BCI2000_REVISION --ignore-externals --username $env:SVN_USER --password $env:SVN_PASS `
+              --non-interactive --no-auth-cache https://bci2000.org/svn/trunk C:\bci2000 | Select-Object -Last 3
           exit $LASTEXITCODE
 
       - name: Save the BCI2000 source
