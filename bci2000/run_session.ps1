@@ -2,14 +2,14 @@
 Run one BCI2000 session run of the Thai checkerboard speller on Windows, configured the same way every
 time. The Windows counterpart of bci2000/run_session.sh (macOS): same modes, checks, logs and output.
 
-  .\bci2000\run_session.ps1 check     -Subject S01 -Port COM5     # 60 s: blink / eyes closed / jaw (H3 + H13)
-  .\bci2000\run_session.ps1 calibrate -Subject S01 -Port COM5 -Text "<calibration sentence>" [-Reps 5]
-  .\bci2000\run_session.ps1 online    -Subject S01 -Port COM5 -Model models\S01_bci2000.prm -Text "<sentence>"
+  .\bci2000\run_session.ps1 view                                 # live signal, nothing recorded
+  .\bci2000\run_session.ps1 check     -Subject S01               # 60 s: blink / eyes closed / jaw (H3 + H13)
+  .\bci2000\run_session.ps1 calibrate -Subject S01 -Text "<calibration sentence>" [-Reps 5]
+  .\bci2000\run_session.ps1 online    -Subject S01 -Model models\S01_bci2000.prm -Text "<sentence>"
                                       [-Condition transformer|uniform|fixed] [-Reps 5]
-  .\bci2000\run_session.ps1 online    -Subject S01 -Port COM5 -Model models\S01_bci2000.prm -Free
+Most people use bci2000\windows\menu.ps1 (ThaiSpeller.cmd) instead, which runs these in order.
 
--Port: the headset's Bluetooth COM port. Windows Settings > Bluetooth & devices > More Bluetooth settings
-  > COM Ports: the "Outgoing" port of UN-... (pair the headset first).
+-Port: the headset's Bluetooth COM port; "auto" (the default) finds the paired headset.
 Common options: -Session 001 (BCI2000 SubjectSession), -Data DIR (default collection\recordings\bci2000),
   -Window 1280x800, -Fake (rehearse with tools/fake_unicorn_bt.py instead of -Port; the data marks itself
   synthetic), -Auto (start the run by itself 2 s after configuring instead of waiting for Start).
@@ -37,7 +37,7 @@ param(
     [switch]$Auto,
     [string]$Data = "",
     [string]$Window = "1280x800",
-    [string]$Port = ""
+    [string]$Port = "auto"
 )
 $ErrorActionPreference = "Stop"
 
@@ -53,9 +53,16 @@ function Usage {
 function Slash([string]$path) { return $path.Replace('\', '/') }
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$CondaBase = (& conda info --base).Trim()
-$PY = Join-Path $CondaBase "envs\p300speller\python.exe"
-$Prog = if ($env:BCI2000_ROOT) { Join-Path $env:BCI2000_ROOT "prog" } else { Join-Path $HOME "BCI2000\trunk\prog" }
+# The Windows package brings its own Python and BCI2000 next to the code; a developer setup uses the
+# p300speller conda environment and a BCI2000 source build.
+$PY = Join-Path $Repo "python\python.exe"
+if (-not (Test-Path $PY)) {
+    try { $PY = Join-Path ((& conda info --base) | Out-String).Trim() "envs\p300speller\python.exe" } catch { }
+}
+$Prog = Join-Path $Repo "bci2000\prog"
+if (-not (Test-Path (Join-Path $Prog "BCI2000Shell.exe"))) {
+    $Prog = if ($env:BCI2000_ROOT) { Join-Path $env:BCI2000_ROOT "prog" } else { Join-Path $HOME "BCI2000\trunk\prog" }
+}
 $SpellerPrm = Join-Path $Repo "bci2000\parms\ThaiCheckerboard.prm"
 $FakePort = 9000
 if (-not $Data) { $Data = Join-Path $Repo "collection\recordings\bci2000" }
@@ -64,13 +71,14 @@ $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-if ($Mode -notin @("calibrate", "online", "check")) { Usage }
+if ($Mode -notin @("calibrate", "online", "check", "view")) { Usage }
+if ($Mode -eq "view" -and -not $Subject) { $Subject = "VIEW" }
 if ($Subject -notmatch '^[A-Za-z0-9]+$') { Die "-Subject must be letters and digits only (BCI2000 builds file names from it)" }
 if ($Session -notmatch '^[0-9]{1,3}$') { Die "-Session must be a number of up to 3 digits" }
 if ($Window -notmatch '^[0-9]+x[0-9]+$') { Die "-Window must look like 1280x800" }
 if ($Reps -lt 0) { Die "-Reps must be a positive integer" }
 if ($Condition -notin @("transformer", "uniform", "fixed")) { Die "-Condition must be transformer, uniform or fixed" }
-if (-not (Test-Path $PY)) { Die "no Python at ${PY}: create the p300speller conda environment first" }
+if (-not $PY -or -not (Test-Path $PY)) { Die "no Python found: use the Windows package, or create the p300speller conda environment" }
 
 foreach ($m in @("BCI2000Shell.exe", "UnicornSerialSource.exe", "DummySignalProcessing.exe",
                  "CheckerboardSignalProcessing.exe", "CheckerboardSpeller.exe", "DummyApplication.exe")) {
@@ -129,12 +137,19 @@ switch ($Mode) {
                     @("Set parameter NumberOfSequences $n")
     }
     "check" { $App = "DummyApplication" }
+    "view" { $App = "DummyApplication" }
 }
 
 if ($Fake) {
     $SourceArgs = "--TcpAddress=127.0.0.1:$FakePort"
     Write-Host "*** -Fake: SYNTHETIC EEG from tools/fake_unicorn_bt.py. This is a rehearsal, not data. ***"
 } else {
+    if (-not $Port -or $Port -eq "auto") {
+        $found = @(& $PY $Helper find-headset)
+        if ($LASTEXITCODE -ne 0 -or -not $found) { exit 2 }   # the helper said why
+        $Port = ($found[-1] | Out-String).Trim()
+        Write-Host "Headset port: $Port"
+    }
     if ($Port -notmatch '^COM[0-9]+$') {
         Die ("-Port must be the headset's COM port, e.g. -Port COM5: Windows Settings > Bluetooth & devices > " +
              "More Bluetooth settings > COM Ports, the `"Outgoing`" port of UN-...")
@@ -156,6 +171,8 @@ if ($Work -match ' ') {
     if ($Work -match ' ') { Die "the temp folder path has spaces and no short form; set TEMP to a folder without spaces" }
 }
 $SystemLog = Join-Path $Work "system.log"
+# Looking only: BCI2000 still reserves a file name when it configures, so keep that out of the recordings
+if ($Mode -eq "view") { $Data = $Work }
 
 $FakeProc = $null
 if ($Fake) {
@@ -179,7 +196,11 @@ try {
     $Dir = Join-Path $Data "$Subject$Session"
     $before = @(Get-ChildItem -Path $Dir -Filter *.dat -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
 
-    if ($Mode -eq "check") {
+    if ($Mode -eq "view") {
+        $run = @("Set config", "Wait for Resting 30", "Show window",
+                 "Echo Looking only: nothing is recorded. Close the Operator window when you are done.",
+                 "Wait for Running 86400")
+    } elseif ($Mode -eq "check") {
         $run = @("Set config", "Wait for Resting 30", "Show window",
                  "Echo Check the traces in the Source window. The recording starts in 5 s: 20 s blinking, 20 s eyes closed, 20 s jaw clench.",
                  "Sleep 5", "Start",
@@ -195,8 +216,8 @@ try {
                  "Wait for Running", "Wait for Suspended")
     }
 
-    # The Source window's display filters (never the recording): a 50 Hz notch for Thailand's mains, and a
-    # 1 Hz high-pass so the headset's DC offset (~0.2-0.4 V) doesn't push the traces off screen.
+    # The Source window shows the raw signal: every display filter off (set explicitly, since the Operator
+    # remembers the last choice). The recording is never filtered either way.
     $script = @(
         'Change directory $BCI2000LAUNCHDIR',
         "Reset system",
@@ -205,8 +226,9 @@ try {
         "Start executable $SP --local",
         "Start executable $App --local",
         "Wait for Connected 30",
-        "Set VisProperty SRCD.NotchFilter 50Hz",
-        "Set VisProperty SRCD.HPFilter 1Hz",
+        "Set VisProperty SRCD.HPFilter off",
+        "Set VisProperty SRCD.LPFilter off",
+        "Set VisProperty SRCD.NotchFilter off",
         "Load parameterfile `"$(Slash $SpellerPrm)`""
     ) + $Settings + @(
         "Set parameter DataDirectory `"$(Slash $Data)`"",
@@ -229,6 +251,7 @@ try {
     }
 
     Write-Host ""
+    if ($Mode -eq "view") { exit 0 }
     if (Test-Path $SystemLog) {
         $errors = Select-String -Path $SystemLog -Pattern "Error"
         if ($errors) {
@@ -259,11 +282,14 @@ try {
             $quoted = ($out | Select-Object -Skip 1 | ForEach-Object { "`"$_`"" }) -join " "
             Write-Host "Calibration runs in this session: $($out[0]) (do another run, or fit on all of them)"
             $demo = if ($Fake) { " --allow-demo" } else { "" }
-            Write-Host "Next: & `"$PY`" -m pipeline.fit_from_recording --id $Subject --recording $quoted --lm-transformer-checkpoint models\thai_gpt_checkpoint.pt$demo"
+            # One manifest per subject; the Transformer as its NumPy-readable export (no PyTorch on Windows)
+            $stem = if ($Fake) { "demo_$Subject" } else { $Subject }
+            Write-Host "Next: & `"$PY`" -m pipeline.fit_from_recording --id $Subject --recording $quoted --manifest models\${stem}_manifest.json --lm-transformer-checkpoint models\thai_gpt.lmbin$demo"
         }
         "online" { Write-Host "Summary: & `"$PY`" -m stopping.summarize_experiment --recording `"$latest`"" }
         "check" { Write-Host "Checks: & `"$PY`" tools\h13_montage_check.py `"$latest`"" }
     }
+    exit 0   # not BCI2000Shell's status, which is nonzero after any Echo
 } finally {
     if ($FakeProc -and -not $FakeProc.HasExited) {
         Start-Sleep -Seconds 1

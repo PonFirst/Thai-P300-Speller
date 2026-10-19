@@ -1,0 +1,91 @@
+THAI P300 SPELLER FOR WINDOWS
+=============================
+
+You need: a Windows 10 or 11 laptop, the Unicorn Hybrid Black headset (charged),
+and the file ThaiSpeller-Windows.zip.
+
+
+SET UP (once, about 5 minutes)
+------------------------------
+
+1. Unblock the download.
+   Right-click ThaiSpeller-Windows.zip > Properties > tick "Unblock" at the bottom > OK.
+   (No Unblock box? Skip this step.)
+
+2. Unzip it to C:\
+   Right-click the zip > Extract All... > change the folder to   C:\   > Extract.
+   You now have the folder C:\ThaiSpeller.
+
+3. Pair the headset.
+   Switch the headset on.
+   Settings > Bluetooth & devices > Add device > Bluetooth > choose UN-...
+
+Nothing else to install.
+
+
+EACH SESSION
+------------
+
+1. Prepare the room and laptop.
+   - Unplug the laptop charger (it adds electrical noise to the EEG).
+   - Display at 60 Hz: Settings > System > Display > Advanced display > refresh rate 60 Hz.
+   - Quiet room, phone silenced.
+
+2. Put the headset on.
+   - Gel in all 8 electrodes.
+   - Both sticker electrodes on the bone behind the ears, cables clipped in.
+
+3. Double-click  C:\ThaiSpeller\ThaiSpeller.cmd
+   - "Windows protected your PC"?  Click More info > Run anyway.
+   - Windows Firewall asks about BCI2000 or Python?  Click Allow.
+     (The programs only talk to each other on this laptop.)
+
+4. Answer the questions: Y for the real headset, the participant code
+   (letters and digits, e.g. S01, never a name), and the session number.
+
+5. Do the steps in order. Type the step's number and press Enter.
+   1  Look at the signal   Check the 8 traces look calm. Close the Operator window when done.
+   2  Check run            Follow the instructions. All four result lines must say PASS.
+   3  Calibration, part 1  Press Start in the Operator window.
+   4  Calibration, part 2  Rest a few minutes first.
+   5  Fit                  The AUC it prints should be about 0.70 or more.
+   6  Spelling, all flashes
+   7  Spelling, dynamic stopping
+   8  Reports              Opens the results in your web browser.
+   Finished steps are marked "done". Type 0 to quit.
+
+During calibration and spelling, the participant looks at the highlighted letter,
+silently counts how often it flashes, and blinks only between letters.
+
+
+WHERE THE DATA GOES
+-------------------
+
+Recordings, logs and reports:  C:\ThaiSpeller\collection\recordings\bci2000\<code><session>\
+The participant's model:       C:\ThaiSpeller\models\
+To back up, copy both folders.
+
+
+TRY IT WITHOUT THE HEADSET
+--------------------------
+
+Start ThaiSpeller.cmd and type R instead of Y. A fake headset sends made-up signals,
+and its files go to collection\recordings\bci2000_rehearsal.
+
+
+IF SOMETHING GOES WRONG
+-----------------------
+
+"No paired headset found"     Switch the headset on and pair it (set up, step 3).
+"the headset sent nothing"    Switch the headset off for 10 seconds, on again, and repeat the step.
+All channels look wild        Unplug the charger, press the stickers behind the ears, add gel.
+"BCI2000 is already running"  Close the Operator window first.
+Anything else                 Send the text in the window and the run's .system.log file
+                              (in the recordings folder) to the person who gave you this package.
+
+
+UPDATING
+--------
+
+Extract the new zip to C:\ the same way, then copy your old collection\recordings and
+models folders into the new C:\ThaiSpeller.

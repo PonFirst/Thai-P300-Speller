@@ -1,0 +1,196 @@
+# Builds the ready-to-run Windows package of the Thai P300 speller on GitHub's Windows machines:
+# BCI2000 (the revision the Mac build uses) with this project's three modules, a private Python with
+# the packages the Python side needs, the code, and the Transformer prior. Then tests it: the Python
+# tests with the package's own Python, and a full session with the fake headset through the menu.
+#
+# Needs two repository secrets, your bci2000.org login (Settings > Secrets and variables > Actions):
+#   BCI2000_SVN_USERNAME, BCI2000_SVN_PASSWORD
+# Runs on every push to the windows branch (the zip is under the run's Artifacts), and on a tag
+# win-v* it also publishes the zip as a GitHub release. bci2000/WINDOWS.md has the details.
+
+name: Windows package
+
+on:
+  push:
+    branches: [windows]
+    tags: ["win-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BCI2000_REVISION: "9529"   # the revision of the Mac build (~/BCI2000/trunk) and its tests
+  QT_VERSION: "6.8.3"
+  PYTHON_VERSION: "3.11"
+  PYTHONUTF8: "1"
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the BCI2000 login is set
+        shell: pwsh
+        env:
+          SVN_USER: ${{ secrets.BCI2000_SVN_USERNAME }}
+          SVN_PASS: ${{ secrets.BCI2000_SVN_PASSWORD }}
+        run: |
+          if (-not $env:SVN_USER -or -not $env:SVN_PASS) {
+            Write-Error "Add the repository secrets BCI2000_SVN_USERNAME and BCI2000_SVN_PASSWORD (your bci2000.org login): Settings > Secrets and variables > Actions."
+            exit 1
+          }
+
+      - name: Restore the BCI2000 source
+        id: bci2000-src
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\bci2000
+          key: bci2000-source-r${{ env.BCI2000_REVISION }}
+
+      - name: Check out BCI2000
+        if: steps.bci2000-src.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          SVN_USER: ${{ secrets.BCI2000_SVN_USERNAME }}
+          SVN_PASS: ${{ secrets.BCI2000_SVN_PASSWORD }}
+        run: |
+          choco install sliksvn --no-progress -y | Out-Null
+          $svn = "C:\Program Files\SlikSvn\bin\svn.exe"
+          & $svn checkout -q -r $env:BCI2000_REVISION --username $env:SVN_USER --password $env:SVN_PASS `
+              --non-interactive --no-auth-cache https://bci2000.org/svn/trunk C:\bci2000
+          exit $LASTEXITCODE
+
+      - name: Save the BCI2000 source
+        if: steps.bci2000-src.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\bci2000
+          key: bci2000-source-r${{ env.BCI2000_REVISION }}
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Link this project's modules into BCI2000
+        shell: cmd
+        run: |
+          if exist C:\bci2000\src\custom rmdir C:\bci2000\src\custom
+          mklink /J C:\bci2000\src\custom "%GITHUB_WORKSPACE%\bci2000"
+
+      - name: Configure BCI2000
+        shell: pwsh
+        working-directory: C:\bci2000\build
+        run: |
+          cmake . -G "Visual Studio 17 2022" -A x64 -DBUILD_MODULES=core -DBUILD_CUSTOM=ON `
+              -DBUILD_DEMOS=OFF -DBUILD_CONTRIB=OFF -DBUILD_TESTS=OFF "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+          exit $LASTEXITCODE
+
+      - name: Build BCI2000 and this project's modules
+        shell: pwsh
+        working-directory: C:\bci2000\build
+        run: |
+          cmake --build . --config Release --parallel
+          exit $LASTEXITCODE
+
+      - name: Put Qt and the C++ runtime next to the programs
+        shell: pwsh
+        run: |
+          $prog = "C:\bci2000\prog"
+          foreach ($m in "BCI2000Shell", "Operator", "UnicornSerialSource", "CheckerboardSpeller",
+                         "CheckerboardSignalProcessing", "DummySignalProcessing", "DummyApplication") {
+            if (-not (Test-Path "$prog\$m.exe")) { Write-Error "the build made no $m.exe"; exit 1 }
+          }
+          # Qt's own deployment tool; it skips programs that don't use Qt
+          Get-ChildItem $prog -Filter *.exe | ForEach-Object {
+            & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations --no-system-d3d-compiler `
+                --no-opengl-sw --dir $prog $_.FullName 2>&1 | Out-Null
+          }
+          # The Visual C++ runtime, app-local, so the laptop needs no runtime installer
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" -Directory | Sort-Object FullName | Select-Object -Last 1
+          Copy-Item "$($crt.FullName)\*.dll" $prog -Force
+          exit 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Assemble the package
+        shell: pwsh
+        run: |
+          $pkg = "C:\pkg\ThaiSpeller"
+          New-Item -ItemType Directory -Force C:\pkg | Out-Null
+          git -C $env:GITHUB_WORKSPACE archive --format=zip -o C:\pkg\source.zip HEAD
+          Expand-Archive C:\pkg\source.zip $pkg
+          Remove-Item C:\pkg\source.zip
+          Remove-Item -Recurse -Force "$pkg\.github"
+          # Python of its own, with exactly the packages the Python side needs (no PyTorch)
+          Copy-Item -Recurse $env:pythonLocation "$pkg\python"
+          & "$pkg\python\python.exe" -m pip install -q --no-warn-script-location -r "$pkg\bci2000\windows\requirements.txt"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item -Recurse C:\bci2000\prog "$pkg\bci2000\prog"
+          Copy-Item C:\bci2000\doc\htmlhelp\mediawiki\html\BCI2000_Licensing.html "$pkg\BCI2000_LICENSE.html"
+          Copy-Item "$pkg\bci2000\windows\NOTICE.txt" "$pkg\NOTICE.txt"
+          $commit = git -C $env:GITHUB_WORKSPACE rev-parse HEAD
+          "ThaiSpeller package`ncode commit $commit`nBCI2000 revision $env:BCI2000_REVISION`nQt $env:QT_VERSION`nbuilt $(Get-Date -Format o)" |
+              Set-Content "$pkg\VERSION.txt"
+          if (-not (Test-Path "$pkg\models\thai_gpt.lmbin")) { Write-Error "models\thai_gpt.lmbin is not in the repository"; exit 1 }
+          exit 0
+
+      - name: Python tests with the package's Python
+        shell: pwsh
+        working-directory: C:\pkg\ThaiSpeller
+        run: |
+          .\python\python.exe -m pytest -q -p no:cacheprovider -k "not test_transformer_" `
+              tests/test_thai_gpt_numpy.py tests/test_bci2000_session.py tests/test_fit_from_bci2000.py `
+              tests/test_bci2000_dat.py tests/test_bci2000_recording.py tests/test_epoching.py `
+              tests/test_evaluate_recording.py tests/test_fit_from_recording.py tests/test_language_model.py `
+              tests/test_manifest.py tests/test_quality.py tests/test_summarize_experiment.py
+          exit $LASTEXITCODE
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          & "C:\Program Files\7-Zip\7z.exe" a -tzip -mx=5 C:\pkg\ThaiSpeller-Windows.zip C:\pkg\ThaiSpeller | Out-Null
+          exit $LASTEXITCODE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ThaiSpeller-Windows
+          path: C:\pkg\ThaiSpeller-Windows.zip
+          compression-level: 0
+
+      - name: Rehearse a whole session with the fake headset (Windows PowerShell, as users run it)
+        shell: pwsh
+        timeout-minutes: 40
+        run: |
+          Copy-Item -Recurse C:\pkg\ThaiSpeller C:\smoke
+          Set-Location C:\smoke
+          foreach ($step in "check", "cal1", "cal2", "fit", "fixed", "transformer", "reports") {
+            Write-Host "=== step $step ==="
+            powershell -NoProfile -ExecutionPolicy Bypass -File bci2000\windows\menu.ps1 -Subject CI -Fake -Auto -Reps 1 -Step $step
+            if ($LASTEXITCODE -ne 0) { Write-Error "step $step failed (exit $LASTEXITCODE)"; exit 1 }
+          }
+          exit 0
+
+      - name: Keep the rehearsal's files and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rehearsal-logs
+          path: |
+            C:\smoke\collection\recordings\bci2000_rehearsal
+            C:\smoke\models\demo_CI_*
+          if-no-files-found: ignore
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/win-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: C:\pkg\ThaiSpeller-Windows.zip

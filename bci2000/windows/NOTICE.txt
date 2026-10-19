@@ -1,0 +1,15 @@
+Thai P300 Speller for Windows
+
+This package contains:
+
+- BCI2000 (www.bci2000.org), built from its source at the revision named in VERSION.txt, under the
+  GNU General Public License. See BCI2000_LICENSE.html. BCI2000's source code is available from
+  bci2000.org after free registration.
+- This project's BCI2000 modules (UnicornSerialSource, CheckerboardSpeller,
+  CheckerboardSignalProcessing) and Python code, built from the commit named in VERSION.txt.
+  Because they are built into BCI2000, they are distributed under the GPL as well, and their source is
+  the repository this package was built from.
+- Qt (www.qt.io) libraries, under the LGPL.
+- Python (www.python.org) and the Python packages listed in bci2000\windows\requirements.txt, each
+  under its own license.
+- models\thai_gpt.lmbin: the trained Thai character-level language model used as the speller's prior.

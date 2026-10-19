@@ -55,6 +55,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -494,7 +495,16 @@ def fit_from_recording(recording, subject_id: str, *, models_dir="models", manif
     if writes_prm:
         # Before the manifest: a failed export must not leave a new manifest beside an old model file.
         try:
-            if writes_lm_bin:
+            if writes_lm_bin and Path(lm_transformer_checkpoint).suffix.lower() == ".lmbin":
+                # Already exported (the Windows package ships one): check it fits this matrix, then copy
+                from stopping.thai_gpt_numpy import LmbinError, ThaiGPTNumpy
+                try:
+                    ThaiGPTNumpy(lm_transformer_checkpoint, load_characters_file(characters_path))
+                except LmbinError as exc:
+                    raise bci2000_lm_export.LMExportError(str(exc)) from exc
+                shutil.copyfile(lm_transformer_checkpoint, lm_bin_path)
+                emit(f"BCI2000 language model: {lm_bin_path} (copied from {Path(lm_transformer_checkpoint).name})")
+            elif writes_lm_bin:
                 bci2000_lm_export.export_lm(lm_transformer_checkpoint, lm_bin_path, characters_path)
                 emit(f"BCI2000 language model: {lm_bin_path}")
             elif lm_bin_path.exists():
@@ -610,8 +620,8 @@ def main(argv=None) -> int:
                              "demo data, which is where the GUI looks)")
     parser.add_argument("--lm-corpus", default=None, help="UTF-8 Thai corpus; selects the ngram LM (default uniform)")
     parser.add_argument("--lm-transformer-checkpoint", default=None,
-                        help="gpt_dev.ipynb checkpoint (.pt); selects the transformer LM (default uniform); "
-                             "mutually exclusive with --lm-corpus")
+                        help="gpt_dev.ipynb checkpoint (.pt), or its BCI2000 export (.lmbin, needs no torch); "
+                             "selects the transformer LM (default uniform); mutually exclusive with --lm-corpus")
     parser.add_argument("--allow-demo", action="store_true", help="allow a demo_ recording; prefixes every artifact")
     parser.add_argument("--force", action="store_true", help="overwrite existing artifacts")
     parser.add_argument("--n-splits", type=int, default=5)

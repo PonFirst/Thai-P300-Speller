@@ -10,8 +10,10 @@ results/route_a/
 collection/recordings/
 collection/thai_speller_logs/
 
-# Fitted classifier checkpoints and calibration -- derived from subject data
-models/
+# Fitted classifier checkpoints and calibration -- derived from subject data. The one exception is the
+# Transformer's BCI2000 export, which the Windows package ships (bci2000/WINDOWS.md).
+models/*
+!models/thai_gpt.lmbin
 
 # stopping/gpt_dev.ipynb's downloaded Thai corpus + trained checkpoint --
 # large, regenerable by re-running the notebook, not source
@@ -45,3 +47,6 @@ env/
 # Editor
 .vscode/
 .idea/
+# The Windows package's bundled Python and BCI2000 (built by .github/workflows/windows-package.yml)
+/python/
+/bci2000/prog/

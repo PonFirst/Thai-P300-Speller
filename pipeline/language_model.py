@@ -94,11 +94,17 @@ def _build_ngram(lm_config: dict, manifest, characters: list[str]):
 
 
 def _build_transformer(lm_config: dict, manifest, characters: list[str]):
-    from stopping.transformer_lm import ThaiTransformerLM  # torch: only needed for this LM type
-
     checkpoint = manifest.transformer_checkpoint_path
     if checkpoint is None or not checkpoint.is_file():
         raise LanguageModelError(f"transformer language model: checkpoint not found at {checkpoint}")
+    if checkpoint.suffix.lower() == ".lmbin":
+        # The BCI2000 export of the same weights, run in NumPy: no torch (the Windows package)
+        from stopping.thai_gpt_numpy import LmbinError, ThaiGPTNumpy
+        try:
+            return ThaiGPTNumpy(checkpoint, characters)
+        except LmbinError as exc:
+            raise LanguageModelError(f"transformer language model: {exc}") from exc
+    from stopping.transformer_lm import ThaiTransformerLM  # torch: only needed for a .pt checkpoint
     return ThaiTransformerLM.from_checkpoint_path(str(checkpoint), characters)
 
 

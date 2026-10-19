@@ -1,0 +1,14 @@
+# The Windows package's Python packages: what the BCI2000 path's Python side imports (the fit, the
+# session reader, summary, replay, montage check, launcher helper), pinned to the Mac environment's
+# versions so fits and replays give the same numbers on both. No PyTorch: the Transformer prior runs
+# from models/thai_gpt.lmbin in NumPy (stopping/thai_gpt_numpy.py).
+numpy==2.3.5
+scipy==1.17.1
+pandas==3.0.5
+scikit-learn==1.9.0
+pyriemann==0.12
+joblib==1.5.3
+pyserial==3.5
+matplotlib==3.11.1
+pylsl==1.18.2
+pytest==9.1.1

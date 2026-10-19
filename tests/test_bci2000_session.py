@@ -301,3 +301,43 @@ def test_the_helper_lists_calibration_runs_only(tmp_path):
                                  extra_params=(w.scalar("RiemannModelID", "ab" * 32, section="Filtering"),))
     lines = helper("calibration-runs", tmp_path).stdout.splitlines()
     assert lines == ["1", str(cal)] and str(online) not in lines
+
+
+def test_the_helper_names_each_run_by_what_it_recorded(tmp_path):
+    import bci2000_dat_writer as w
+    session = w.build_session(w.checkerboard_selections(2, 1, seed=4))
+    sig = w.planted_signal(session, seed=4)
+    model = w.scalar("RiemannModelID", "ab" * 32, section="Filtering")
+
+    def rule(v):
+        return w.scalar("StoppingRule", v, ptype="int", section="Application")
+
+    def lm(v):
+        return w.scalar("LanguageModel", v, ptype="int", section="Application")
+
+    w.write_speller_dat(tmp_path / "S1S001R01.dat", session, sig, omit_states=tuple(f"FlashChar{i}" for i in range(1, 7)))
+    w.write_speller_dat(tmp_path / "S1S001R02.dat", session, sig)
+    w.write_speller_dat(tmp_path / "S1S001R03.dat", session, sig, extra_params=(model, rule("0")))
+    w.write_speller_dat(tmp_path / "S1S001R04.dat", session, sig, extra_params=(model, rule("1"), lm("1")))
+    w.write_speller_dat(tmp_path / "S1S001R05.dat", session, sig, extra_params=(model, rule("1"), lm("0")))
+    (tmp_path / "S1S001R06.dat").write_bytes(b"")              # BCI2000's placeholder: configured, never started
+    out = helper("runs", tmp_path)
+    assert out.returncode == 0, out.stderr
+    kinds = [line.split("\t") for line in out.stdout.splitlines()]
+    assert [(k, Path(p).name) for k, p in kinds] == [
+        ("check", "S1S001R01.dat"), ("calibration", "S1S001R02.dat"), ("fixed", "S1S001R03.dat"),
+        ("transformer", "S1S001R04.dat"), ("uniform", "S1S001R05.dat")]
+
+
+def test_the_headset_port_is_the_paired_outgoing_bluetooth_port():
+    sys.path.insert(0, str(REPO_ROOT / "bci2000"))
+    import session_helper as sh
+    from types import SimpleNamespace as P
+    ports = [
+        P(device="COM1", hwid="ACPI\\PNP0501\\0"),
+        P(device="COM5", hwid="BTHENUM\\{00001101-0000-1000-8000-00805F9B34FB}_LOCALMFG&0002\\7&2B0C5B5&0&C8A1B2C3D4E5_C00000000"),
+        P(device="COM6", hwid="BTHENUM\\{00001101-0000-1000-8000-00805F9B34FB}_LOCALMFG&0000\\7&2B0C5B5&0&000000000000_00000000"),
+        P(device="COM7", hwid=None),
+    ]
+    assert sh.outgoing_bluetooth_ports(ports) == ["COM5"]
+    assert sh.bluetooth_address(ports[1].hwid) == "C8A1B2C3D4E5" and sh.bluetooth_address(ports[0].hwid) is None
