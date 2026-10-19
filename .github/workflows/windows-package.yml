@@ -57,8 +57,19 @@ jobs:
           SVN_USER: ${{ secrets.BCI2000_SVN_USERNAME }}
           SVN_PASS: ${{ secrets.BCI2000_SVN_PASSWORD }}
         run: |
-          choco install sliksvn --no-progress -y | Out-Null
-          $svn = "C:\Program Files\SlikSvn\bin\svn.exe"
+          # Subversion from Chocolatey, which now and then fails a download: up to 3 tries, and its output
+          # shown if all fail
+          $svn = $null
+          foreach ($try in 1..3) {
+            $log = choco install sliksvn --no-progress -y 2>&1
+            $svn = Get-ChildItem "C:\Program Files*\SlikSvn\bin\svn.exe" -ErrorAction SilentlyContinue |
+                Select-Object -First 1 -ExpandProperty FullName
+            if ($svn) { break }
+            Write-Host "Subversion install attempt $try failed; retrying in 20 s"
+            Start-Sleep -Seconds 20
+          }
+          if (-not $svn) { $log | Select-Object -Last 30 | Write-Host; Write-Error "could not install Subversion"; exit 1 }
+          Write-Host "Using $svn"
           # --ignore-externals: BCI2000's svn:externals (a SignalSharing header in prog, MATLAB mex tools, a
           # Neuroscan contrib module) are none of them built here, and fetching one failed (E205011).
           & $svn checkout -r $env:BCI2000_REVISION --ignore-externals --username $env:SVN_USER --password $env:SVN_PASS `
