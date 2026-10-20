@@ -252,16 +252,23 @@ try {
 
     Write-Host ""
     if ($Mode -eq "view") { exit 0 }
+    $errors = @()
     if (Test-Path $SystemLog) {
-        $errors = Select-String -Path $SystemLog -Pattern "Error"
+        $errors = @(Select-String -Path $SystemLog -Pattern "Error")
         if ($errors) {
             Write-Host "--- BCI2000 errors ---"
             $errors | ForEach-Object { Write-Host $_.Line }
+            if ($errors | Where-Object { $_.Line -match "maximum texture size" }) {
+                Write-Host ("The graphics driver can't draw a window this large. Use a smaller one, e.g. " +
+                            "ThaiSpeller.cmd -Window 1000x700, or update the graphics driver.")
+            }
         }
     }
-    # Only a file this run created counts: never report an earlier run's recording as this one's.
+    # Only a file this run created counts: never report an earlier run's recording as this one's. An empty
+    # file is BCI2000's placeholder from a configuration that never started, not a recording.
     $latest = Get-ChildItem -Path $Dir -Filter *.dat -ErrorAction SilentlyContinue |
-        Where-Object { $before -notcontains $_.FullName } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        Where-Object { $before -notcontains $_.FullName -and $_.Length -gt 0 } |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $latest) {
         Write-Host "No recording was written by this run (system log: $SystemLog)."
         exit 1
@@ -273,6 +280,10 @@ try {
     if (Test-Path $SystemLog) {
         Copy-Item $SystemLog $logCopy
         Write-Host "System log: $logCopy"
+    }
+    if ($errors) {
+        Write-Host "BCI2000 reported errors during this run (above), so its recording may be incomplete. Repeat the step."
+        exit 1
     }
     switch ($Mode) {
         "calibrate" {
@@ -291,6 +302,11 @@ try {
     }
     exit 0   # not BCI2000Shell's status, which is nonzero after any Echo
 } finally {
+    # A BCI2000 script that stops on an error never reaches its Quit line, which would leave BCI2000 open and
+    # block the next run. Nothing of BCI2000 was running when this run started (checked above), so all of it is ours.
+    Get-Process -Name Operator, UnicornSerialSource, DummySignalProcessing, CheckerboardSignalProcessing,
+        CheckerboardSpeller, DummyApplication, BCI2000Shell -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
     if ($FakeProc -and -not $FakeProc.HasExited) {
         Start-Sleep -Seconds 1
         Stop-Process -Id $FakeProc.Id -Force -ErrorAction SilentlyContinue

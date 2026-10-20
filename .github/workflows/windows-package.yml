@@ -187,7 +187,8 @@ jobs:
           Set-Location C:\smoke
           foreach ($step in "check", "cal1", "cal2", "fit", "fixed", "transformer", "reports") {
             Write-Host "=== step $step ==="
-            powershell -NoProfile -ExecutionPolicy Bypass -File bci2000\windows\menu.ps1 -Subject CI -Fake -Auto -Reps 1 -Step $step
+            # 1000x700: this machine has no graphics card, and its fallback OpenGL draws at most 1024 pixels
+            powershell -NoProfile -ExecutionPolicy Bypass -File bci2000\windows\menu.ps1 -Subject CI -Fake -Auto -Reps 1 -Window 1000x700 -Step $step
             if ($LASTEXITCODE -ne 0) { Write-Error "step $step failed (exit $LASTEXITCODE)"; exit 1 }
           }
           exit 0

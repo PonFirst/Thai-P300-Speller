@@ -8,6 +8,7 @@ Thai text. The sentences come from sentences.json next to this file.
 
 Without the menu (scripts, the package build's smoke test):
   menu.ps1 -Subject S01 -Session 001 -Step check|cal1|cal2|fit|fixed|transformer|reports [-Fake] [-Auto] [-Reps 1]
+           [-Window 1000x700]   (a smaller speller window, for graphics drivers limited to 1024 pixels)
 -Fake rehearses with the fake headset; its files go to collection\recordings\bci2000_rehearsal.
 This file stays ASCII: Windows PowerShell 5.1 misreads other characters in a script without a BOM.
 #>
@@ -17,7 +18,8 @@ param(
     [string]$Step = "",
     [switch]$Fake,
     [switch]$Auto,
-    [int]$Reps = 0
+    [int]$Reps = 0,
+    [string]$Window = ""
 )
 $ErrorActionPreference = "Stop"
 
@@ -76,6 +78,7 @@ function Invoke-Run([string]$mode, [hashtable]$extra = @{}) {
     if ($Fake) { $common.Fake = $true }
     if ($Auto) { $common.Auto = $true }
     if ($Reps -gt 0 -and $mode -ne "check") { $common.Reps = $Reps }
+    if ($Window) { $common.Window = $Window }
     # Everything the run prints goes to the screen; a function would otherwise return it with the exit code
     & $RunSession $mode @common @extra | Out-Host
     return $LASTEXITCODE
